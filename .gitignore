@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Analysis products - these are case material, not source
+output/
+evidence_*/
+evidence_*.zip
+exhibits/
+fixtures/
+*.case.json
+camera_events.csv
+
+# Never commit evidence
+*.cap
+*.pcap
+*.pcapng
+*.kismet
