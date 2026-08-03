@@ -70,6 +70,7 @@ def run_analysis(events: pd.DataFrame, config: dict,
         events,
         handshake_window_s=float(config.get("handshake_window_s", 10.0)),
         reassoc_window_s=float(config.get("reassoc_window_s", 120.0)),
+        reconnect_window_s=float(config.get("reconnect_window_s", 120.0)),
     )
     if drops:
         events = ev.to_frame(events.to_dict("records") + drops)
@@ -151,10 +152,19 @@ def dedupe_camera_events(events: pd.DataFrame, window_s: float = 2.0):
     finding a correlation - the one direction an evidential tool must never
     drift in.
 
-    Only events from *different* source files are merged, and only when they
-    fall within ``window_s`` of each other. Two entries at the same instant in
-    the same file are the operator's own data and are left as they are. The
-    surviving row is the one carrying the most identifying detail.
+    Merging is deliberately narrow, because deleting a real vehicle pass is as
+    damaging as counting one twice:
+
+    * Rows are merged only across *different* source files. A source listing two
+      entries close together is describing two passes it saw, and is left alone.
+    * At most one row per source joins a merged set, so a CSV that legitimately
+      records two passes 1 s apart keeps both.
+    * Merging is anchored, never chained. Four passes 1.9 s apart are four
+      passes, not one five-second event - a rule of "every gap is under the
+      window" would swallow the lot.
+
+    The row carrying the most identifying detail survives, so a plate recorded
+    in a CSV is not discarded in favour of a bare clip filename.
     """
     notes: list[str] = []
     if events.empty or window_s <= 0:
@@ -167,46 +177,51 @@ def dedupe_camera_events(events: pd.DataFrame, window_s: float = 2.0):
     camera = camera.sort_values("ts_utc")
     times = _epoch(camera["ts_utc"])
     indices = camera.index.to_list()
+    sources = [str(camera.loc[i, "source_file"]) for i in indices]
 
-    drop: list = []
-    merged_pairs = 0
-    group_start = 0
-    for position in range(1, len(indices) + 1):
-        at_end = position == len(indices)
-        if not at_end and times[position] - times[position - 1] <= window_s:
+    consumed: set = set()
+    drop: set = set()
+    merged_sets = 0
+
+    for position, index in enumerate(indices):
+        if index in consumed:
+            continue
+        members = [position]
+        claimed = {sources[position]}
+        for other in range(position + 1, len(indices)):
+            if times[other] - times[position] > window_s:
+                break
+            if indices[other] in consumed or sources[other] in claimed:
+                continue
+            claimed.add(sources[other])
+            members.append(other)
+        if len(members) < 2:
             continue
 
-        group = indices[group_start:position]
-        group_start = position
-        if len(group) < 2:
-            continue
-
-        rows = camera.loc[group]
-        if rows["source_file"].nunique() < 2:
-            continue  # one source listing the same pass twice: not ours to merge
-
-        keeper = max(group, key=lambda i: _detail_score(camera.loc[i]))
-        for index in group:
-            if index != keeper:
-                drop.append(index)
-        merged_pairs += 1
+        keeper = max(members, key=lambda pos: _detail_score(camera.loc[indices[pos]]))
+        for pos in members:
+            consumed.add(indices[pos])
+            if pos != keeper:
+                drop.add(indices[pos])
+        merged_sets += 1
 
     if not drop:
         return events, notes
 
-    kept_note = (f"{len(drop)} camera event(s) were removed as duplicates: "
-                 f"{merged_pairs} vehicle pass(es) appeared in more than one camera "
-                 f"source within {window_s:g} s. Counting the same pass twice would "
-                 f"inflate both the number of passes and the number of coincidences. "
-                 f"The entry carrying the most detail was kept in each case.")
-    notes.append(kept_note)
+    notes.append(
+        f"{len(drop)} camera event(s) were removed as duplicates: {merged_sets} "
+        f"vehicle pass(es) appeared in more than one camera source within "
+        f"{window_s:g} s. Counting the same pass twice would inflate both the "
+        f"number of passes and the number of coincidences. Only rows from "
+        f"different source files were merged, at most one per source, and the "
+        f"entry carrying the most detail was kept in each case.")
     return events.drop(index=drop).reset_index(drop=True), notes
 
 
 def _detail_score(row) -> int:
     """How much identifying detail a camera row carries, for choosing a survivor."""
     return sum(1 for field in ("plate", "make", "model", "notes")
-               if str(row.get(field) or "").strip())
+               if ev.text(row.get(field)))
 
 
 def build_matches(camera: pd.DataFrame, all_events: pd.DataFrame,
@@ -250,20 +265,20 @@ def build_matches(camera: pd.DataFrame, all_events: pd.DataFrame,
         attacker = ""
         reason = None
         if nearest_deauth is not None and abs(d_deauth) <= window_s:
-            attacker = nearest_deauth["src_mac"] or ""
+            attacker = ev.text(nearest_deauth["src_mac"])
             reason = nearest_deauth["reason_code"]
         elif nearest_inc is not None and coincident:
-            attacker = nearest_inc.get("src_macs", "") or ""
+            attacker = ev.text(nearest_inc.get("src_macs"))
 
         rows.append({
             "event_local": cam.ts_local,
             "event_utc": cam.ts_utc,
             "utc_offset": cam.utc_offset,
-            "plate": cam.plate or "",
-            "make": cam.make or "",
-            "model": cam.model or "",
+            "plate": ev.text(cam.plate),
+            "make": ev.text(cam.make),
+            "model": ev.text(cam.model),
             "coincidence": coincident,
-            "nearest_kind": (nearest_inc.get("kinds", "") if nearest_inc is not None
+            "nearest_kind": (ev.text(nearest_inc.get("kinds")) if nearest_inc is not None
                              else ""),
             "nearest_local": (nearest_inc.get("ts_local") if nearest_inc is not None
                               else None),
@@ -273,8 +288,8 @@ def build_matches(camera: pd.DataFrame, all_events: pd.DataFrame,
             "reason_code": (int(reason) if reason is not None and reason == reason
                             else None),
             "reason": ev.reason_text(reason),
-            "client_mac": (nearest_inc.get("client_macs", "") if nearest_inc is not None
-                           else ""),
+            "client_mac": (ev.text(nearest_inc.get("client_macs"))
+                           if nearest_inc is not None else ""),
             "nearest_deauth_local": (nearest_deauth["ts_local"]
                                      if nearest_deauth is not None else None),
             "deauth_delta_s": (round(float(d_deauth), 3) if d_deauth == d_deauth
@@ -286,7 +301,7 @@ def build_matches(camera: pd.DataFrame, all_events: pd.DataFrame,
             "in_analysis_period": bool(obs_start <= camera_times[i] <= obs_end),
             "camera_source": cam.source_file,
             "camera_ref": cam.source_ref,
-            "notes": cam.notes or "",
+            "notes": ev.text(cam.notes),
         })
 
     return pd.DataFrame(rows)

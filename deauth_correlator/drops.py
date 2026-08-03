@@ -1,17 +1,34 @@
 """Deriving client-drop events from DHCP lease activity.
 
-A DHCP log does not say "this client was knocked off the network". It says a
-client asked for an address. The inference chain is:
+A DHCP log never says "this client was knocked off the network". It says a
+client asked for an address, and most of the time that is entirely routine.
+Turning routine traffic into disconnection evidence is the worst thing this
+module could do, so the rule is narrow:
 
-1. A normal join produces a burst of lease traffic - DISCOVER, OFFER, REQUEST,
-   ACK - inside a second or two. Those are collapsed into one *association
-   episode* so a single ordinary join is never counted as four events.
-2. A client that already holds a valid lease does not re-run that handshake.
-   When the same MAC starts a second episode within ``reassoc_window`` of the
-   previous one, something interrupted it. That second episode is a client drop.
+    A client drop is a **DISCOVER** from a client that held a confirmed lease
+    moments earlier.
 
-The first episode seen for a MAC is never a drop - there is nothing to say it
-was preceded by a disconnection.
+That is the only pattern that means lost state. A client with a working lease
+renews it with REQUEST/ACK; it does not go back to the beginning. Everything
+else that superficially looks like "repeated DHCP activity" is excluded by
+name, because each of these occurs constantly on healthy networks:
+
+* **Retransmission backoff.** RFC 2131 has a client retry DISCOVER at roughly
+  4, 8, 16 and 32-second intervals when the server does not answer. Those gaps
+  are wider than any plausible handshake window, so grouping messages by
+  proximity in time turned one client that simply could not reach the server
+  into several "disconnections". Retries with no ACK between them are one
+  unfinished attempt.
+* **Lease renewal.** At T1 the client sends REQUEST and gets ACK, forever, with
+  no DISCOVER. Nothing was lost, so it can never be a drop.
+* **DHCPINFORM.** A statically-addressed host asking for option data. Not a
+  lease acquisition at all.
+* **An already-logged disconnection.** When hostapd recorded the disconnect
+  directly, the DHCP re-acquisition that follows is its consequence. Counting
+  both would make one outage look like two.
+
+The first activity seen for a MAC is never a drop: there is no evidence it held
+anything to lose.
 """
 
 from __future__ import annotations
@@ -22,73 +39,142 @@ from .events import make_event
 
 DEFAULT_HANDSHAKE_WINDOW = 10.0
 DEFAULT_REASSOC_WINDOW = 120.0
+DEFAULT_RECONNECT_WINDOW = 120.0
 
 
 def derive_client_drops(df: pd.DataFrame,
                         handshake_window_s: float = DEFAULT_HANDSHAKE_WINDOW,
-                        reassoc_window_s: float = DEFAULT_REASSOC_WINDOW) -> list[dict]:
-    """Return new ``client_drop`` event rows derived from lease/assoc context rows."""
+                        reassoc_window_s: float = DEFAULT_REASSOC_WINDOW,
+                        reconnect_window_s: float = DEFAULT_RECONNECT_WINDOW
+                        ) -> list[dict]:
+    """Return new ``client_drop`` event rows derived from lease/assoc context rows.
+
+    ``handshake_window_s`` is accepted for interface stability but is no longer
+    used: grouping messages by proximity in time is what let retransmission
+    backoff masquerade as repeated disconnections. The operation each message
+    carries is now what decides, which does not depend on timing at all.
+    """
     if df.empty:
         return []
 
-    lease = df[(df["kind"] == "assoc") & df["client_mac"].astype(bool)]
+    has_mac = df["client_mac"].map(lambda v: bool(str(v or "").strip()))
+    lease = df[(df["kind"] == "assoc") & has_mac]
     if lease.empty:
         return []
 
+    resets = _link_reset_times(df)
     drops: list[dict] = []
     for mac, group in lease.groupby("client_mac", sort=False):
-        group = group.sort_values("ts_utc")
-        episodes = _episodes(group, handshake_window_s)
-        for previous, current in zip(episodes, episodes[1:]):
-            gap = (current["ts_utc"] - previous["ts_utc"]).total_seconds()
-            if gap > reassoc_window_s:
-                continue
-            drops.append(make_event(
-                ts_utc=current["ts_utc"],
-                ts_local=current["ts_local"],
-                utc_offset=current["utc_offset"],
-                kind="client_drop",
-                client_mac=mac,
-                dst_mac=mac,
-                notes=(f"re-association {gap:.1f} s after the previous one "
-                       f"({current['episode_events']} lease message(s)); a client "
-                       f"holding a valid lease does not normally repeat the DHCP "
-                       f"handshake this soon"),
-                source_file=current["source_file"],
-                source_kind=f"{current['source_kind']}+derived",
-                source_ref=current["source_ref"],
-                raw=current["raw"],
-            ))
+        drops.extend(_drops_for_client(
+            mac, group.sort_values("ts_utc"), resets.get(mac, []),
+            reassoc_window_s, reconnect_window_s))
     return drops
 
 
-def _episodes(group: pd.DataFrame, handshake_window_s: float) -> list[dict]:
-    """Collapse a MAC's lease messages into association episodes."""
-    episodes: list[dict] = []
-    current: dict | None = None
-    last_ts = None
+def _drops_for_client(mac: str, group: pd.DataFrame, resets: list,
+                      reassoc_window_s: float,
+                      reconnect_window_s: float) -> list[dict]:
+    """Walk one client's lease traffic and pick out genuine re-acquisitions.
+
+    The state machine encodes what actually distinguishes a disconnection from
+    routine traffic:
+
+    * A **DISCOVER** means the client is starting acquisition from nothing. Only
+      that can indicate lost lease state.
+    * Repeated DISCOVERs with no ACK between them are RFC 2131 retransmission
+      backoff - one client trying and failing, not one disconnection per retry.
+      The backoff intervals (4, 8, 16, 32 s) exceed any sane handshake window,
+      so counting each retry separately manufactured drops out of a client that
+      simply could not reach the server.
+    * A **renewal** is REQUEST/ACK with no DISCOVER. A client renewing at T1 has
+      never lost anything, so it can never be a drop.
+    * An **ACK** confirms the client holds a working lease, and is what a later
+      DISCOVER is judged against.
+    """
+    confirming = _confirming_ops(group)
+    drops: list[dict] = []
+
+    last_confirmed = None
+    attempt_open = False
 
     for row in group.itertuples(index=False):
-        if current is None or (row.ts_utc - last_ts).total_seconds() > handshake_window_s:
-            if current is not None:
-                episodes.append(current)
-            current = {
-                "ts_utc": row.ts_utc,
-                "ts_local": row.ts_local,
-                "utc_offset": row.utc_offset,
-                "source_file": row.source_file,
-                "source_kind": row.source_kind,
-                "source_ref": row.source_ref,
-                "raw": row.raw,
-                "episode_events": 1,
-            }
-        else:
-            current["episode_events"] += 1
-        last_ts = row.ts_utc
+        op = str(getattr(row, "subtype", "") or "").upper()
 
-    if current is not None:
-        episodes.append(current)
-    return episodes
+        if op in ("INFORM", "RELEASE", "DECLINE", "NAK"):
+            continue
+
+        if op in confirming:
+            last_confirmed = row.ts_utc
+            attempt_open = False
+            continue
+
+        if op != "DISCOVER":
+            continue  # OFFER, or a REQUEST that is part of a renewal
+
+        if attempt_open:
+            continue  # retransmission of an acquisition already under way
+        attempt_open = True
+
+        if last_confirmed is None:
+            continue  # no evidence this client ever held a lease to lose
+        gap = (row.ts_utc - last_confirmed).total_seconds()
+        if gap > reassoc_window_s or gap < 0:
+            continue
+
+        if _preceded_by_reset(row.ts_utc, resets, reconnect_window_s):
+            # An explicit disconnection was already logged for this client. The
+            # re-acquisition is its consequence, and counting both would make
+            # one outage look like two.
+            continue
+
+        drops.append(make_event(
+            ts_utc=row.ts_utc,
+            ts_local=row.ts_local,
+            utc_offset=row.utc_offset,
+            kind="client_drop",
+            subtype="DISCOVER",
+            client_mac=mac,
+            dst_mac=mac,
+            notes=(f"restarted DHCP acquisition {gap:.1f} s after holding a "
+                   f"confirmed lease; a client that still has a valid lease "
+                   f"renews it rather than starting again from DISCOVER"),
+            source_file=row.source_file,
+            source_kind=f"{row.source_kind}+derived",
+            source_ref=row.source_ref,
+            raw=row.raw,
+        ))
+    return drops
+
+
+def _confirming_ops(group: pd.DataFrame) -> set:
+    """Which operations count as proof the client held a working lease.
+
+    ACK is the right answer. Some servers and log levels never record one, and
+    on those a renewing REQUEST is the best available evidence, so it is
+    accepted only when the client has no ACK anywhere in the data.
+    """
+    seen = {str(s or "").upper() for s in group.get("subtype", [])}
+    return {"ACK"} if "ACK" in seen else {"ACK", "REQUEST"}
+
+
+def _link_reset_times(df: pd.DataFrame) -> dict:
+    resets: dict[str, list] = {}
+    explicit = df[df["kind"] == "link_reset"]
+    for row in explicit.itertuples(index=False):
+        mac = str(row.client_mac or "").strip()
+        if mac:
+            resets.setdefault(mac, []).append(row.ts_utc)
+    for times in resets.values():
+        times.sort()
+    return resets
+
+
+def _preceded_by_reset(when, resets: list, window_s: float) -> bool:
+    for reset in resets:
+        delta = (when - reset).total_seconds()
+        if 0 <= delta <= window_s:
+            return True
+    return False
 
 
 def cluster_incidents(df: pd.DataFrame, gap_s: float = 10.0) -> pd.DataFrame:

@@ -167,6 +167,23 @@ def _statistics(a) -> str:
         f"coincidence window of ±{s.window_s:g} seconds and were computed with the "
         f"{s.backend} numerical backend.")
     lines.append("")
+    lines.append(
+        f"**A correlation is declared only when every test clears the threshold, not "
+        f"when the most favourable one does.** Reporting the smallest of several "
+        f"p-values is the same error as running tests until one agrees, and it inflates "
+        f"the false-positive rate several times over. The figure the finding rests on "
+        f"here is the weakest of the three: p = {_p(s.worst_p)}, from "
+        f"{s.weakest_test}.")
+    lines.append("")
+    if s.tests_straddle(float(a.config.get('alpha', 0.01))):
+        lines.append(
+            f"The tests disagree about the answer: p ranges from {_p(s.best_p)} to "
+            f"{_p(s.worst_p)}, straddling the {a.config.get('alpha', 0.01)} threshold. "
+            f"That usually means one test's assumptions are not being met - most often "
+            f"the binomial test's assumption that each camera event is independent, "
+            f"which is broken when a single vehicle pass produces several rows. Treat "
+            f"the weakest figure as the honest one.")
+        lines.append("")
 
     lines += [
         "### 3.1 Coincidence count",
@@ -264,15 +281,18 @@ def _sensitivity(a) -> str:
         "windows; a result that appears at exactly one width and nowhere else is a "
         "sign of chance or of a window chosen to fit.",
         "",
-        "| Window | Coincidences | Baseline | Rate ratio | Binomial p | Permutation p | Fisher p |",
-        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Window | Coincidences | Baseline | Rate ratio | Binomial p | Permutation p | Fisher p | Weakest |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for s in a.sensitivity:
         marker = " **(primary)**" if s.window_s == a.stats.window_s else ""
         lines.append(
             f"| ±{s.window_s:g} s{marker} | {s.n_coincident}/{s.n_camera} | "
             f"{s.baseline_rate * 100:.1f}% | {s.rate_ratio:.2f}x | {_p(s.binom_p)} | "
-            f"{_p(s.perm_p)} | {_p(s.fisher_p)} |")
+            f"{_p(s.perm_p)} | {_p(s.fisher_p)} | **{_p(s.worst_p)}** |")
+    lines += ["",
+              "The final column is the weakest of the three tests at that width, and "
+              "is the figure the verdict is decided on."]
     return "\n".join(lines)
 
 
@@ -367,11 +387,11 @@ def _event_table(a) -> str:
         flag = "**YES**" if row.coincidence else "no"
         if not row.in_analysis_period:
             flag += " (outside period)"
-        source = f"`{row.attacker_mac}`" if row.attacker_mac else "-"
+        source = f"`{ev.text(row.attacker_mac)}`" if ev.text(row.attacker_mac) else "-"
         lines.append(
-            f"| {i} | {_fmt(row.event_local)} | {row.plate or '-'} | {flag} "
-            f"| {row.nearest_kind or '-'} | {row.delta_plain} | {source} "
-            f"| {row.reason or '-'} |")
+            f"| {i} | {_fmt(row.event_local)} | {_cell(row.plate)} | {flag} "
+            f"| {_cell(row.nearest_kind)} | {row.delta_plain} | {source} "
+            f"| {_cell(row.reason)} |")
     return "\n".join(lines)
 
 
@@ -678,6 +698,11 @@ def _kind_meaning(kind: str) -> str:
         "assoc": "A device joined or renewed its address (context, not a disruption)",
         "context": "Supporting information, not counted as a disruption",
     }.get(kind, "")
+
+
+def _cell(value) -> str:
+    """A table cell that never prints a missing value as the string "nan"."""
+    return ev.text(value) or "-"
 
 
 def _fmt(value) -> str:

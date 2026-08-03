@@ -92,7 +92,7 @@ def run_self_test(keep: str | None = None, verbose: bool = True) -> int:
         when something is broken you want the whole picture, not the first
         traceback.
         """
-        print(f"{'' if number == 1 else chr(10)}[{number}/8] {title}")
+        print(f"{'' if number == 1 else chr(10)}[{number}/9] {title}")
         try:
             body()
         except Exception as exc:
@@ -129,6 +129,8 @@ def run_self_test(keep: str | None = None, verbose: bool = True) -> int:
         section(7, "The two statistics backends agree", lambda: _test_backends(check))
         section(8, "Degenerate inputs are handled honestly",
                 lambda: _test_edge_cases(check, root / "edge"))
+        section(9, "Routine network traffic is not mistaken for evidence",
+                lambda: _test_no_fabrication(check))
 
     finally:
         if cleanup is not None:
@@ -292,8 +294,9 @@ def _test_positive(check: Check, analysis) -> None:
     check.equal(analysis.verdict.label, VERDICT_FOUND,
                 "a planted correlation is reported as found")
     check.at_least(s.n_coincident, 8, "most planted camera events are matched")
-    check.that(s.best_p < 0.01, "the strongest p-value clears the threshold",
-               f"best p = {s.best_p:.4g}")
+    check.that(s.worst_p < 0.01,
+               "every significance test clears the threshold, not just the best one",
+               f"weakest p = {s.worst_p:.4g} from {s.weakest_test}")
     check.that(s.rate_ratio >= 2.0, "the rate ratio exceeds 2x",
                f"got {s.rate_ratio:.2f}")
     check.at_least(len(analysis.floods.floods), 1, "the planted floods are detected")
@@ -306,7 +309,7 @@ def _test_positive(check: Check, analysis) -> None:
                "the analysis period has a positive duration")
 
     drops = analysis.events[analysis.events["kind"] == "client_drop"]
-    check.that(all("re-association" in (n or "") for n in drops["notes"]),
+    check.that(all("restarted DHCP acquisition" in (n or "") for n in drops["notes"]),
                "each derived drop explains why it was derived")
 
 
@@ -314,9 +317,9 @@ def _test_negative(check: Check, analysis) -> None:
     check.that(analysis.verdict.label != VERDICT_FOUND,
                "independent random data does NOT produce a correlation finding",
                f"verdict was {analysis.verdict.label}: {analysis.verdict.headline}")
-    check.that(analysis.stats.best_p > 0.001,
+    check.that(analysis.stats.worst_p > 0.001,
                "random data does not produce an extreme p-value",
-               f"best p = {analysis.stats.best_p:.4g}")
+               f"weakest p = {analysis.stats.worst_p:.4g}")
     check.that(analysis.stats.n_camera > 0,
                "the negative scenario still parsed its camera events")
 
@@ -630,6 +633,151 @@ def _test_edge_cases(check: Check, directory: Path) -> None:
     config = AppConfig(camera_events=[str(empty_csv)], timezone=TZ)
     events, records, warnings = load_evidence(config, None, log=lambda *a, **k: None)
     check.that(events.empty, "a header-only CSV yields no events without crashing")
+
+
+def _test_no_fabrication(check: Check) -> None:
+    """Regressions for the ways this tool could invent or overstate evidence.
+
+    Every case here was a real defect. Each one either manufactured disruption
+    events out of ordinary network traffic, deleted genuine camera events, or
+    let a finding be declared on weaker grounds than the report claimed. They
+    are the failures that matter most, because their output looks entirely
+    plausible.
+    """
+    import numpy as np
+
+    from . import stats as st
+    from .correlate import dedupe_camera_events
+    from .drops import derive_client_drops
+    from .events import make_event, norm_mac, text, to_frame
+    from .parsers.dot11 import decode_packet
+    from .timeutil import TimeContext, finalize
+
+    ctx = TimeContext(TZ, 2026)
+    mac = CLIENTS[0]
+
+    def lease(seconds: float, subtype: str, kind: str = "assoc") -> dict:
+        utc, local, offset = finalize(BASE + timedelta(seconds=seconds), ctx)
+        return make_event(ts_utc=utc, ts_local=local, utc_offset=offset, kind=kind,
+                          subtype=subtype, client_mac=mac, source_file="dhcp.log",
+                          source_kind="opnsense", source_ref="1", raw="")
+
+    # -- routine DHCP traffic must never become disruption evidence ----------
+    scenarios = {
+        "DHCP retransmission backoff is one failed attempt, not five drops": (
+            [lease(-500, "ACK")] + [lease(t, "DISCOVER") for t in (0, 4, 12, 28, 60)],
+            0),
+        "routine T1 lease renewals are not drops": (
+            [lease(t, "REQUEST") for t in (0, 90, 180, 270)]
+            + [lease(t + 1, "ACK") for t in (0, 90, 180, 270)], 0),
+        "repeated DHCPINFORM from a static host is not a drop": (
+            [lease(-500, "ACK")] + [lease(t, "INFORM") for t in (0, 30, 60)], 0),
+        "a client that never held a lease cannot have dropped": (
+            [lease(t, "DISCOVER") for t in (0, 4, 12, 28)], 0),
+        "an already-logged disconnection is not counted twice": (
+            [lease(0, "ACK"), lease(10, "", "link_reset"),
+             lease(30, "DISCOVER"), lease(32, "ACK")], 0),
+        "a genuine re-acquisition after a confirmed lease IS a drop": (
+            [lease(0, "ACK"), lease(20, "DISCOVER"), lease(22, "ACK")], 1),
+    }
+    for description, (rows, expected) in scenarios.items():
+        found = len(derive_client_drops(to_frame(rows)))
+        check.equal(found, expected, description)
+
+    # -- de-duplication must not delete genuine passes -----------------------
+    def camera(seconds: float, source: str, plate: str = "") -> dict:
+        utc, local, offset = finalize(BASE + timedelta(seconds=seconds), ctx)
+        return make_event(ts_utc=utc, ts_local=local, utc_offset=offset, kind="camera",
+                          plate=plate, source_file=source, source_kind="camera_csv",
+                          source_ref="r", raw="")
+
+    kept, _ = dedupe_camera_events(
+        to_frame([camera(0, "passes.csv", "ABC123"),
+                  camera(1, "passes.csv", "XYZ789"),
+                  camera(0, "clips/")]), 2.0)
+    plates = sorted(p for p in kept["plate"] if text(p))
+    check.equal(plates, ["ABC123", "XYZ789"],
+                "two distinct passes in one file survive a duplicate from another "
+                "source")
+
+    chained = [camera(t, "passes.csv", f"P{i}")
+               for i, t in enumerate((0, 1.9, 3.8, 5.7))]
+    kept, _ = dedupe_camera_events(to_frame(chained), 2.0)
+    check.equal(int((kept["category"] == "camera").sum()), 4,
+                "four passes 1.9 s apart are four passes, not one merged event")
+
+    kept, _ = dedupe_camera_events(
+        to_frame([camera(0, "passes.csv", "ABC123"), camera(0.4, "clips/")]), 2.0)
+    check.equal(int((kept["category"] == "camera").sum()), 1,
+                "a real cross-source duplicate is still merged")
+
+    # -- the verdict must rest on the weakest test, not the best -------------
+    stats = st.analyze(np.array([100.0, 500.0, 900.0, 1300.0]),
+                       np.array([104.0, 505.0, 903.0, 1305.0]),
+                       0.0, 2000.0, 30.0, trials=500)
+    check.that(stats.worst_p >= stats.best_p,
+               "worst_p is never smaller than best_p")
+
+    forced = st.WindowStats(
+        window_s=30, n_camera=40, n_coincident=14, coincidence_rate=0.35,
+        baseline_rate=0.181, expected_by_chance=7.25, lift=1.9,
+        binom_p=0.00832, perm_p=0.111, fisher_p=0.265,
+        perm_trials=1000, perm_mean=7.0, fisher_odds_ratio=1.7,
+        chi2=1.2, chi2_p=0.27, table=[[14, 26], [30, 200]], rate_ratio=3.0)
+    verdict = st.decide(forced, alpha=0.01, n_incidents=300)
+    check.that(verdict.label != VERDICT_FOUND,
+               "one test clearing alpha while the others do not is NOT a finding",
+               f"binom={forced.binom_p} perm={forced.perm_p} "
+               f"fisher={forced.fisher_p} -> {verdict.label}")
+    check.that(forced.tests_straddle(0.01),
+               "and the disagreement across the threshold is flagged")
+
+    # -- frame decoding must not invent a reason code ------------------------
+    import struct as _struct
+
+    def mac_bytes(value: str) -> bytes:
+        return bytes(int(part, 16) for part in norm_mac(value).split(":"))
+
+    protected = bytearray(build_deauth_frame(
+        mac_bytes(ATTACKER_MAC), mac_bytes(BROADCAST), mac_bytes(AP_BSSID), reason=7))
+    control = _struct.unpack_from("<H", protected, 0)[0] | 0x4000
+    _struct.pack_into("<H", protected, 0, control)
+    frame = decode_packet(bytes(protected), 105)
+    check.that(frame is not None and frame.reason_code is None and frame.protected,
+               "an 802.11w protected frame yields no reason code rather than "
+               "ciphertext read as one")
+
+    # -- radiotap FHSS is byte-aligned; getting it wrong drops the signal ----
+    present = (1 << 0) | (1 << 1) | (1 << 4) | (1 << 5)
+    fields = (_struct.pack("<Q", 12345) + _struct.pack("<B", 0)
+              + _struct.pack("<BB", 1, 2) + _struct.pack("<b", -55))
+    header = _struct.pack("<BBHI", 0, 0, 8 + len(fields), present) + fields
+    frame = decode_packet(
+        header + build_deauth_frame(mac_bytes(ATTACKER_MAC), mac_bytes(BROADCAST),
+                                    mac_bytes(AP_BSSID), reason=7),
+        DLT_IEEE802_11_RADIOTAP)
+    check.that(frame is not None and frame.signal_dbm == -55,
+               "the radiotap signal survives a header containing an FHSS field",
+               f"got {frame.signal_dbm if frame else 'no frame'}")
+
+    # -- no p-value is ever reported as exactly zero -------------------------
+    check.that(st._binom_sf(5, 5, 0.0) > 0.0,
+               "a p-value is never reported as exactly zero")
+
+    # -- missing values never render as the string 'nan' ---------------------
+    check.equal(text(float("nan")), "", "a missing value renders as blank, not 'nan'")
+    check.equal(text(None), "", "None renders as blank")
+    check.equal(text("aa:bb:cc:dd:ee:ff"), "aa:bb:cc:dd:ee:ff",
+                "a real value is left alone")
+
+    mixed = to_frame([camera(0, "a.csv", "ABC123"), camera(300, "a.csv")])
+    from .correlate import build_matches
+    from .drops import cluster_incidents
+    matches = build_matches(mixed[mixed["category"] == "camera"], mixed,
+                            cluster_incidents(mixed), 30.0, 0.0, 1e12)
+    check.that(all(str(v) != "nan" for v in matches["plate"]),
+               "a blank plate in a mixed column does not become the text 'nan'",
+               f"got {list(matches['plate'])}")
 
 
 # -- fixture generation ----------------------------------------------------

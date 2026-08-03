@@ -53,6 +53,8 @@ class Dot11Frame:
     reason_code: int | None
     signal_dbm: int | None = None
     channel: int | None = None
+    #: frame body is encrypted (802.11w PMF), so no reason code is readable
+    protected: bool = False
 
     @property
     def kind(self) -> str | None:
@@ -113,7 +115,7 @@ _RT_FIELDS = [
     (1, 1),   # 1 Flags
     (1, 1),   # 2 Rate
     (4, 2),   # 3 Channel (freq u16 + flags u16)
-    (2, 2),   # 4 FHSS
+    (2, 1),   # 4 FHSS - two u8s, byte-aligned, NOT 2-byte aligned
     (1, 1),   # 5 dBm antenna signal
 ]
 
@@ -174,13 +176,21 @@ def parse_dot11(data: bytes, signal: int | None = None,
     src = mac_from_bytes(data[10:16])
     bssid = mac_from_bytes(data[16:22])
 
+    # The Protected bit means the frame body is encrypted. Under 802.11w
+    # (Protected Management Frames) a legitimate deauthentication is protected,
+    # and bytes 24-25 are then ciphertext - reading them yields an arbitrary
+    # number that can land on 1 or 7 and be reported as an attack-tool
+    # signature. No reason code is better than a fabricated one.
+    protected = bool(fc & 0x4000)
+
     reason = None
-    if subtype in (SUBTYPE_DEAUTH, SUBTYPE_DISASSOC) and len(data) >= 26:
+    if (subtype in (SUBTYPE_DEAUTH, SUBTYPE_DISASSOC)
+            and len(data) >= 26 and not protected):
         reason = struct.unpack_from("<H", data, 24)[0]
 
     return Dot11Frame(subtype=subtype, ftype=ftype, dst_mac=dst, src_mac=src,
                       bssid=bssid, reason_code=reason, signal_dbm=signal,
-                      channel=channel)
+                      channel=channel, protected=protected)
 
 
 def decode_packet(data: bytes, dlt: int) -> Dot11Frame | None:

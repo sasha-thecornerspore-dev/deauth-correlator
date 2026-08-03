@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .base import Parser, ParseContext, ParseError
-from .dot11 import WIFI_DLTS, decode_packet
+from .dot11 import DLT_IEEE802_11_RADIOTAP, WIFI_DLTS, decode_packet
 from ..events import make_event, reason_text, is_group_addressed, BROADCAST
 from ..timeutil import finalize
 
@@ -181,6 +181,16 @@ def _read_pcapng(fh, path: Path, ctx: ParseContext):
         fh.read(4)  # trailing block length
 
         if block_type == 0x00000001:  # Interface Description Block
+            if len(body) < 8:
+                # A malformed or truncated IDB must not abort the whole file.
+                # Raising here loses every packet in an otherwise readable
+                # capture, which for the primary evidence source is far worse
+                # than assuming the usual radiotap link type.
+                ctx.warn(f"{path.name}: an interface description block was "
+                         f"truncated ({len(body)} bytes); assuming radiotap "
+                         f"802.11 with microsecond timestamps for it.")
+                interfaces.append((DLT_IEEE802_11_RADIOTAP, 1e6))
+                continue
             link_type = struct.unpack_from(endian + "H", body, 0)[0]
             divisor = _if_tsresol(body[8:], endian)
             interfaces.append((link_type, divisor))

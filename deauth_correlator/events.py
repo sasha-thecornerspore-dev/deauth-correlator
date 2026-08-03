@@ -16,6 +16,7 @@ EVENT_COLUMNS = [
     "utc_offset",    # offset observed in the source, e.g. "-04:00"
     "kind",          # deauth | disassoc | client_drop | link_reset | camera | assoc | alert
     "category",      # camera | disruption | context
+    "subtype",       # protocol operation, e.g. DISCOVER / REQUEST / ACK / RENEW
     "src_mac",       # transmitter (the deauth sender - the "attacker" address)
     "dst_mac",       # receiver (the targeted client, or ff:ff:ff:ff:ff:ff)
     "bssid",
@@ -176,6 +177,22 @@ def to_frame(rows: list[dict]) -> pd.DataFrame:
     df["reason_code"] = pd.to_numeric(df["reason_code"], errors="coerce").astype("Float64")
     df = df.sort_values("ts_utc", kind="stable").reset_index(drop=True)
     return df
+
+
+def text(value) -> str:
+    """A display-safe string for a possibly-missing field.
+
+    Never use ``value or ""`` on a column read back from a DataFrame. Under
+    pandas 3.x a column mixing strings and blanks gets ``str`` dtype with
+    ``NaN`` for the blanks, and ``NaN`` is truthy - so ``or ""`` returns the
+    NaN and the report prints a MAC address of ``nan``.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float) and value != value:
+        return ""
+    result = str(value).strip()
+    return "" if result.lower() in ("nan", "none", "<na>", "nat") else result
 
 
 _EPOCH = pd.Timestamp("1970-01-01", tz="UTC")

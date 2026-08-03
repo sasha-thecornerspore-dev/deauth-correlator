@@ -836,10 +836,10 @@ class App(ttk.Frame):
             self.results_tree.insert("", "end", tags=("hit",) if row.coincidence
                                      else ("odd",) if i % 2 else (),
                                      values=(
-                i, _fmt(row.event_local), row.plate or "",
+                i, _fmt(row.event_local), _text(row.plate),
                 "YES" if row.coincidence else "no",
-                row.nearest_kind or "", row.delta_plain,
-                row.attacker_mac or "", row.reason or ""))
+                _text(row.nearest_kind), row.delta_plain,
+                _text(row.attacker_mac), _text(row.reason)))
 
         self.stats_tree.delete(*self.stats_tree.get_children())
         for measure, value, meaning in _stats_rows(analysis):
@@ -1021,7 +1021,7 @@ def _stats_rows(analysis) -> list[tuple[str, str, str]]:
     for entry in analysis.sensitivity:
         rows.append((f"Sensitivity ±{entry.window_s:g} s",
                      f"{entry.n_coincident}/{entry.n_camera}, "
-                     f"ratio {entry.rate_ratio:.2f}x, p = {_p(entry.best_p)}",
+                     f"ratio {entry.rate_ratio:.2f}x, weakest p = {_p(entry.worst_p)}",
                      "Same analysis at a different window width."))
     return rows
 
@@ -1040,6 +1040,12 @@ def _open_path(path) -> None:
             subprocess.run(["xdg-open", str(path)], check=False)
     except Exception:
         webbrowser.open(path.as_uri())
+
+
+def _text(value) -> str:
+    """Display-safe string; pandas 3.x hands back a truthy NaN for blanks."""
+    from ..events import text
+    return text(value)
 
 
 def _fmt(value) -> str:

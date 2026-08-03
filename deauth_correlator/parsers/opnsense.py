@@ -64,7 +64,11 @@ KEA_PKT_TYPE_RE = re.compile(r"packet type (?P<type>DHCP\w+)")
 
 IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
-LEASE_OPS = {"DISCOVER", "REQUEST", "ACK", "OFFER", "INFORM"}
+# Operations that form part of obtaining or holding a lease. INFORM is
+# deliberately excluded: a statically-addressed host sends it to ask for option
+# data and it is not a lease acquisition at all, so treating it as one turns
+# ordinary Windows traffic into fabricated disconnection evidence.
+LEASE_OPS = {"DISCOVER", "REQUEST", "ACK", "OFFER"}
 RELEASE_OPS = {"RELEASE", "DECLINE", "NAK"}
 
 # Lines that are themselves evidence of a client losing its link.
@@ -233,6 +237,7 @@ def _dhcp_event(proc: str, msg: str, common: dict) -> dict | None:
     kind = "assoc" if op in LEASE_OPS else "context"
     return make_event(
         kind=kind, category="context",
+        subtype=op,
         client_mac=mac,
         notes=f"DHCP{op}" + (f" {ip_match.group(0)}" if ip_match else ""),
         **common,
@@ -249,9 +254,29 @@ def _kea_event(msg: str, common: dict) -> dict | None:
     label = ev["event"] if ev else (pkt["type"] if pkt else "KEA_LEASE")
     if label in ("DHCP4_RELEASE",):
         return make_event(kind="context", category="context", client_mac=mac,
-                          notes=label, **common)
+                          subtype="RELEASE", notes=label, **common)
     return make_event(kind="assoc", category="context", client_mac=mac,
-                      notes=label, **common)
+                      subtype=_kea_subtype(label, pkt), notes=label, **common)
+
+
+def _kea_subtype(label: str, packet_match) -> str:
+    """Map a Kea log event onto the DHCP operation it represents.
+
+    ``DHCP4_LEASE_ALLOC`` follows a fresh acquisition, ``DHCP4_LEASE_RENEW`` a
+    renewal. Telling them apart matters: only the first can indicate that a
+    client lost its lease state.
+    """
+    if packet_match:
+        op = packet_match["type"].upper().removeprefix("DHCP")
+        if op:
+            return op
+    if label == "DHCP4_LEASE_RENEW":
+        return "RENEW"
+    if label in ("DHCP4_LEASE_ALLOC", "DHCP6_LEASE_ALLOC", "DHCP4_INIT_REBOOT"):
+        return "ACK"
+    if label == "DHCP4_LEASE_ADVERT":
+        return "OFFER"
+    return ""
 
 
 def _first_mac(text: str) -> str:

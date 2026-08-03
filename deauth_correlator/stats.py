@@ -81,16 +81,56 @@ class WindowStats:
     backend: str = "scipy" if HAVE_SCIPY else "pure-python"
 
     @property
+    def _p_values(self) -> list:
+        return [p for p in (self.binom_p, self.perm_p, self.fisher_p)
+                if p == p and p is not None]
+
+    @property
     def best_p(self) -> float:
-        candidates = [p for p in (self.binom_p, self.perm_p, self.fisher_p)
-                      if p == p and p is not None]
-        return min(candidates) if candidates else 1.0
+        """The most favourable p-value. Reported for completeness only.
+
+        The verdict must never rest on this: picking the smallest of several
+        tests is the same error as running tests until one of them agrees.
+        """
+        return min(self._p_values) if self._p_values else 1.0
 
     @property
     def worst_p(self) -> float:
-        candidates = [p for p in (self.binom_p, self.perm_p, self.fisher_p)
-                      if p == p and p is not None]
-        return max(candidates) if candidates else 1.0
+        """The least favourable p-value - the one the verdict is decided on.
+
+        The report tells the reader that agreement between methods resting on
+        different assumptions is what makes the result durable. That claim is
+        only honest if every test has to clear the threshold, so this is the
+        figure :func:`decide` uses.
+        """
+        return max(self._p_values) if self._p_values else 1.0
+
+    @property
+    def weakest_test(self) -> str:
+        """Which test gave the least favourable p-value, for the report."""
+        named = [("the binomial test", self.binom_p),
+                 ("the permutation test", self.perm_p),
+                 ("Fisher's exact test", self.fisher_p)]
+        named = [(n, p) for n, p in named if p == p and p is not None]
+        if not named:
+            return "no test"
+        return max(named, key=lambda item: item[1])[0]
+
+    def tests_straddle(self, alpha: float) -> bool:
+        """True when some tests clear the threshold and others do not.
+
+        A plain ratio between the largest and smallest p-value is the wrong
+        measure: the permutation p-value is floored at 1/(trials+1), so a
+        genuinely overwhelming result routinely spans eight orders of magnitude
+        without anything being wrong. What matters is disagreement about the
+        *decision* - that is the case where one test's assumptions are not being
+        met, most often the binomial test's assumption that each camera event is
+        independent, which one vehicle producing several rows breaks.
+        """
+        values = self._p_values
+        if len(values) < 2:
+            return False
+        return any(p < alpha for p in values) and any(p >= alpha for p in values)
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -211,7 +251,13 @@ def decide(stats: WindowStats, alpha: float = DEFAULT_ALPHA,
             ["no disruption events"])
 
     passes_count = stats.n_coincident >= MIN_COINCIDENCES_FOR_VERDICT
-    passes_p = stats.best_p < alpha
+    # Every test must clear the threshold, not the most favourable one. Taking
+    # the smallest of several p-values is the same error as running tests until
+    # one agrees, and it inflates the false-positive rate well past alpha - most
+    # visibly when one vehicle produces several camera rows, which breaks the
+    # binomial test's independence assumption while leaving the permutation
+    # test intact.
+    passes_p = stats.worst_p < alpha
     passes_ratio = stats.rate_ratio >= MIN_RATE_RATIO_FOR_VERDICT
 
     if not passes_count:
@@ -220,13 +266,20 @@ def decide(stats: WindowStats, alpha: float = DEFAULT_ALPHA,
             f"(at least {MIN_COINCIDENCES_FOR_VERDICT} coincidences are required)")
     if not passes_p:
         reasons.append(
-            f"the strongest significance test gave p = {stats.best_p:.4g}, which does "
-            f"not clear the threshold of {alpha:g}")
+            f"{stats.weakest_test} gave p = {stats.worst_p:.4g}, which does not clear "
+            f"the threshold of {alpha:g}. Every test has to clear it, not just the "
+            f"most favourable one")
     if not passes_ratio:
         reasons.append(
             f"disruptions were only {stats.rate_ratio:.2f}x more frequent during camera "
             f"windows than outside them (at least {MIN_RATE_RATIO_FOR_VERDICT:g}x is "
             f"required)")
+    if stats.tests_straddle(alpha):
+        reasons.append(
+            f"the tests disagree about the answer - p ranges from {stats.best_p:.3g} "
+            f"to {stats.worst_p:.3g}, straddling the {alpha:g} threshold. That usually "
+            f"means one test's assumptions are not met, most often several camera rows "
+            f"describing a single vehicle pass")
 
     if passes_count and passes_p and passes_ratio:
         return Verdict(
@@ -235,9 +288,10 @@ def decide(stats: WindowStats, alpha: float = DEFAULT_ALPHA,
             f"({stats.coincidence_rate * 100:.0f}%) coincided with a wireless "
             f"disruption within +/-{stats.window_s:g} s; "
             f"{stats.expected_by_chance:.1f} would be expected by chance "
-            f"(p = {stats.best_p:.3g}, {stats.rate_ratio:.1f}x the background rate).",
+            f"(every test p <= {stats.worst_p:.3g}, "
+            f"{stats.rate_ratio:.1f}x the background rate).",
             [f"{stats.n_coincident} coincidences",
-             f"p = {stats.best_p:.3g} < {alpha:g}",
+             f"all three tests below {alpha:g} (weakest p = {stats.worst_p:.3g})",
              f"rate ratio {stats.rate_ratio:.2f}x"])
 
     return Verdict(
@@ -443,7 +497,9 @@ def _binom_sf(k: int, n: int, p: float) -> float:
     if k <= 0:
         return 1.0
     if p <= 0.0:
-        return 0.0 if k > 0 else 1.0
+        # A literal zero has no place in an evidence report - it asserts
+        # impossibility. Report the smallest value the arithmetic can support.
+        return 5e-324 if k > 0 else 1.0
     if p >= 1.0:
         return 1.0
 
@@ -524,12 +580,24 @@ def scan_for_lag(camera_times: np.ndarray, incident_times: np.ndarray,
 
     # The only lags worth testing are the ones that actually align some pair of
     # events, so the candidates come from the observed differences rather than
-    # from a blind grid.
-    deltas = (incident_times[None, :] - camera_times[:, None]).ravel()
-    deltas = deltas[np.abs(deltas) <= max_lag_s]
-    if deltas.size == 0:
+    # from a blind grid. The differences are gathered a row at a time and
+    # filtered as they go: the full outer product of a large case (5,000 camera
+    # events against 20,000 incidents) is 1.7 GB, and a bigger one exhausts
+    # memory outright.
+    kept: list = []
+    budget = 4_000_000
+    for start in range(0, len(camera_times), 256):
+        block = camera_times[start:start + 256]
+        deltas = (incident_times[None, :] - block[:, None]).ravel()
+        deltas = deltas[np.abs(deltas) <= max_lag_s]
+        if deltas.size:
+            kept.append(np.unique(np.round(deltas)))
+        if sum(part.size for part in kept) > budget:
+            scan.searched_s = max_lag_s
+            break
+    if not kept:
         return scan
-    candidates = np.unique(np.round(deltas))
+    candidates = np.unique(np.concatenate(kept))
     if candidates.size > max_candidates:
         step = int(np.ceil(candidates.size / max_candidates))
         candidates = candidates[::step]
