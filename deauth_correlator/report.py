@@ -228,8 +228,19 @@ def _statistics(a) -> str:
 
 
 def _sensitivity(a) -> str:
+    # Section numbers are cross-referenced from the text and from the evidence
+    # bundle's cover sheet, so a section is never dropped when it has nothing to
+    # show - it says so instead. A report that jumps from 3 to 5 invites the
+    # question of what was removed.
     if not a.sensitivity:
-        return ""
+        reason = ("it was disabled for this run"
+                  if not a.config.get("sensitivity", True)
+                  else "there were too few events to repeat the analysis at other "
+                       "window widths")
+        return ("## 4. Window sensitivity\n\n"
+                f"No sensitivity analysis was performed because {reason}. The "
+                f"coincidence window used throughout this report is "
+                f"±{a.stats.window_s:g} seconds.")
     lines = [
         "## 4. Window sensitivity",
         "",
@@ -324,7 +335,9 @@ def _floods(a) -> str:
 
 def _event_table(a) -> str:
     if a.matches.empty:
-        return ""
+        return ("## 6. Camera events, one by one\n\n"
+                "No camera events were present in the evidence, so there is nothing to "
+                "list here. Section 1 explains what this means for the analysis.")
     lines = [
         "## 6. Camera events, one by one",
         "",

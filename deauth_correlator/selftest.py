@@ -454,6 +454,34 @@ def _test_edge_cases(check: Check, directory: Path) -> None:
         check.that(False, "an empty event set produces a verdict rather than an "
                           "exception", f"{exc.__class__.__name__}: {exc}")
 
+    # The report must always carry the same eleven sections. Section numbers are
+    # cross-referenced from the text and from the bundle cover sheet, so a
+    # report that skips a number because a section had nothing in it would
+    # invite the question of what was removed.
+    import re
+
+    from .report import build_report
+
+    scenarios = {
+        "there are no camera events": [
+            event(BASE + timedelta(seconds=i * 60), "deauth") for i in range(5)],
+        "there are no disruptions": [
+            event(BASE + timedelta(seconds=i * 300), "camera") for i in range(6)],
+        "there are no events at all": [],
+        "the sensitivity table is disabled": (
+            [event(BASE + timedelta(seconds=i * 300), "camera") for i in range(6)]
+            + [event(BASE + timedelta(seconds=i * 300 + 4), "deauth")
+               for i in range(6)]),
+    }
+    for label, rows in scenarios.items():
+        config = AppConfig(
+            timezone=TZ, trials=400,
+            sensitivity=(label != "the sensitivity table is disabled")).analysis_dict()
+        report = build_report(run_analysis(to_frame(rows), config))
+        numbers = [int(n) for n in re.findall(r"^## (\d+)\. ", report, re.M)]
+        check.equal(numbers, list(range(1, 12)),
+                    f"the report keeps all eleven sections when {label}")
+
     # A missing input path is reported and skipped, not fatal.
     from .cli import load_evidence
     directory.mkdir(parents=True, exist_ok=True)
