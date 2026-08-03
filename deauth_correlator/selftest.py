@@ -162,6 +162,37 @@ def _test_time(check: Check) -> None:
     check.that("before" in humanize_delta(-4.2) and "after" in humanize_delta(4.2),
                "delta direction is worded, not signed")
 
+    # Daylight-saving edges. A wall-clock time with no offset is not always one
+    # instant, and a silently-resolved hour would be a sixty-second error inside
+    # a thirty-second analysis, so both cases must be counted and disclosed.
+    fallback = TimeContext(TZ, 2026)
+    for stamp in ("Nov  1 01:30:00", "Nov  1 01:45:00"):
+        finalize(parse_any(stamp, fallback), fallback)
+    check.equal((fallback.dst_ambiguous, fallback.dst_nonexistent), (2, 0),
+                "timestamps in the repeated daylight-saving hour are flagged ambiguous")
+
+    gap = TimeContext(TZ, 2026)
+    finalize(parse_any("Mar  8 02:30:00", gap), gap)
+    check.equal((gap.dst_ambiguous, gap.dst_nonexistent), (0, 1),
+                "a timestamp in the skipped daylight-saving hour is flagged as "
+                "nonexistent, not as ambiguous")
+
+    southern = TimeContext("Australia/Sydney", 2026)
+    finalize(parse_any("Oct  4 02:30:00", southern), southern)
+    check.equal(southern.dst_nonexistent, 1,
+                "the same detection works for a southern-hemisphere transition")
+
+    ordinary = TimeContext(TZ, 2026)
+    for stamp in ("Jul 14 21:03:11", "Jan  5 06:00:00"):
+        finalize(parse_any(stamp, ordinary), ordinary)
+    check.equal(ordinary.dst_warnings(), [],
+                "ordinary timestamps raise no daylight-saving warning")
+
+    explicit = TimeContext(TZ, 2026)
+    finalize(parse_any("2026-11-01T01:30:00-04:00", explicit), explicit)
+    check.equal(explicit.dst_warnings(), [],
+                "a timestamp carrying its own UTC offset is never ambiguous")
+
 
 def _test_frames(check: Check) -> None:
     from .parsers.dot11 import decode_packet

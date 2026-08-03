@@ -506,7 +506,9 @@ def _limitations(a) -> str:
         "the clocks that produced the timestamps. Camera and router clocks drift, and a "
         "camera whose clock is wrong by a minute will destroy a 30-second correlation "
         "or manufacture a false one. Where the camera was reachable its clock offset "
-        "was measured and is stated in section 8.3.",
+        "was measured and is stated in section 8.3. Log timestamps that carry no UTC "
+        "offset and fall in a daylight-saving transition are ambiguous by an hour; any "
+        "such timestamps are listed in section 8.6.",
         "- **Other causes produce the same signature.** Wireless interference, a "
         "failing access point, a client device with a defective radio, channel changes, "
         "microwave ovens and cordless phones can all cause clients to drop. What "

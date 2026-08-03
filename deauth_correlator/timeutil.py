@@ -60,12 +60,73 @@ class TimeContext:
         # Set by parsers when they infer a year for a year-less file, so the
         # report can disclose the inference.
         self.year_inferences: list[str] = []
+        # Timestamps that fell in a daylight-saving gap or repeat, recorded so
+        # the report can disclose them rather than quietly resolving them.
+        self.dst_ambiguous = 0
+        self.dst_nonexistent = 0
+        self.dst_examples: list[str] = []
 
     def localize_naive(self, naive: datetime) -> datetime:
-        """Attach a timezone to a naive timestamp read from a log."""
+        """Attach a timezone to a naive timestamp read from a log.
+
+        A local timestamp with no offset is not always a single instant. On the
+        night the clocks go back, every wall-clock time in the repeated hour
+        happens twice; on the night they go forward, an hour of wall-clock times
+        never happens at all. Python resolves both silently - the repeated hour
+        to its first occurrence. That is the right default, but it is also a
+        one-hour error hiding inside a thirty-second analysis, so each case is
+        counted and reported.
+        """
         if self.assume_offset is not None:
             return naive.replace(tzinfo=timezone(self.assume_offset))
-        return naive.replace(tzinfo=self.tz)
+
+        aware = naive.replace(tzinfo=self.tz)
+        self._note_dst_edge(naive, aware)
+        return aware
+
+    def _note_dst_edge(self, naive: datetime, aware: datetime) -> None:
+        # Under PEP 495 the two folds carry different offsets for a repeated
+        # hour *and* for a skipped one, so the offset comparison only says
+        # "this is a transition edge". What separates the two cases is the
+        # round trip: a repeated wall time survives a conversion to UTC and
+        # back, a skipped one comes back as a different reading.
+        if aware.utcoffset() == naive.replace(tzinfo=self.tz, fold=1).utcoffset():
+            return
+        round_tripped = (aware.astimezone(timezone.utc)
+                         .astimezone(self.tz).replace(tzinfo=None))
+        if round_tripped == naive:
+            self.dst_ambiguous += 1
+            self._add_example(f"{naive:%Y-%m-%d %H:%M:%S} occurs twice (clocks went "
+                              f"back); the earlier instant was used")
+        else:
+            self.dst_nonexistent += 1
+            self._add_example(f"{naive:%Y-%m-%d %H:%M:%S} does not exist (clocks went "
+                              f"forward); it was read as {round_tripped:%H:%M:%S}")
+
+    def _add_example(self, text: str) -> None:
+        if len(self.dst_examples) < 5 and text not in self.dst_examples:
+            self.dst_examples.append(text)
+
+    def dst_warnings(self) -> list[str]:
+        """Disclosures for the report about daylight-saving edge cases."""
+        notes: list[str] = []
+        if self.dst_ambiguous:
+            notes.append(
+                f"{self.dst_ambiguous} timestamp(s) fell in the repeated hour of the "
+                f"daylight-saving change in {self.tz_name}, where the same wall-clock "
+                f"reading occurs twice. The earlier of the two instants was used, "
+                f"which is the conventional reading, but any of these could be an hour "
+                f"later than assumed. Re-export the logs with UTC offsets (tick "
+                f"rfc5424 on the OPNsense syslog target) to remove the ambiguity.")
+        if self.dst_nonexistent:
+            notes.append(
+                f"{self.dst_nonexistent} timestamp(s) name a wall-clock time that does "
+                f"not exist in {self.tz_name}, inside the hour skipped by the "
+                f"daylight-saving change. This usually means the device writing the "
+                f"log had the wrong timezone or a stale clock; those rows should be "
+                f"treated with caution.")
+        notes.extend(f"Daylight-saving note: {e}" for e in self.dst_examples)
+        return notes
 
     def to_local(self, dt: datetime) -> datetime:
         return dt.astimezone(self.tz)

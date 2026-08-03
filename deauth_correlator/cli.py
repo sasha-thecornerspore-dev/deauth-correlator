@@ -269,6 +269,7 @@ def load_evidence(config: AppConfig, forced_parser: str | None = None,
             log(f"  + {path.name}: {len(parsed)} event(s) via {parser.name}")
 
     warnings.extend(time_ctx.year_inferences)
+    warnings.extend(time_ctx.dst_warnings())
     return to_frame(rows), records, warnings
 
 

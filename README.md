@@ -558,6 +558,15 @@ link type is not 802.11. Confirm with `iw dev wlan1mon info`.
 the correct IANA zone rather than a fixed offset; the zone knows when the transition
 happened, a fixed offset does not.
 
+The tool detects the two genuinely ambiguous cases and reports them in the methodology
+section rather than resolving them silently. On the night the clocks go back, every
+wall-clock reading in the repeated hour happens twice — a year-less `Nov 1 01:30:00`
+could be either of two instants an hour apart, and the earlier is assumed. On the night
+they go forward, an hour of readings never happens at all, which usually means the
+logging device had the wrong timezone. Both are one-hour errors hiding inside a
+thirty-second analysis. Ticking **rfc5424** on the OPNsense syslog target removes the
+ambiguity entirely by putting a real UTC offset on every line.
+
 **Timestamps are off by a whole year** — a year-less syslog file whose modification date
 misled the inference. Pass `--log-year`.
 
