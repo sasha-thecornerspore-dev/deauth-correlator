@@ -313,14 +313,21 @@ exe_gui = EXE(                                # noqa: F821 - injected
 # destination path, so the second executable adds only its own bootloader and
 # its own compiled entry script.
 #
-# The GUI executable is listed first on purpose: COLLECT inherits its console
-# setting from the first EXE it is given, and BUNDLE reads that setting to
-# decide whether the .app should be a background-only process. A collection
-# marked as a console program would produce an .app with LSBackgroundOnly set,
-# which never appears in the Dock.
+# The GUI executable is listed LAST on purpose. COLLECT loops over its EXE
+# arguments assigning `self.console = arg.console` each time, so the last one
+# assigned is the one that survives - not the first. BUNDLE then reads that
+# setting, and a collection marked as a console program produces an .app with
+# LSBackgroundOnly set, which never opens a window and never appears in the
+# Dock. Listing the console executable first and the windowed one second is
+# therefore what makes the macOS bundle usable.
+#
+# Do not reorder these without re-reading COLLECT.__init__ and BUNDLE.__init__
+# in the PyInstaller version in use. packaging/build.py checks the resulting
+# Info.plist and fails the build if this is wrong, which is how the original
+# ordering was caught.
 collected = COLLECT(                          # noqa: F821 - injected
-    exe_gui,
     exe_cli,
+    exe_gui,
     analysis_gui.binaries,
     analysis_gui.datas,
     analysis_cli.binaries,
@@ -340,8 +347,11 @@ collected = COLLECT(                          # noqa: F821 - injected
 # executables and no .app, whatever is written here.
 #
 # BUNDLE takes the name of its main executable from the first EXECUTABLE entry
-# in its table of contents, so exe_gui is passed before the collection. Both
-# executables end up in Contents/MacOS, and the command-line one stays usable at
+# in its table of contents, so exe_gui is passed before the collection: that
+# puts the windowed executable at the head of the TOC and makes it the one macOS
+# launches. The console flag is a separate matter and follows the last argument,
+# which is the collection - see the note above COLLECT. Both executables end up
+# in Contents/MacOS, and the command-line one stays usable at
 #     deauth-correlator.app/Contents/MacOS/deauth-correlator
 if sys.platform == "darwin":
     app = BUNDLE(                             # noqa: F821 - injected
