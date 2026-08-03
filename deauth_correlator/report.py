@@ -96,6 +96,21 @@ def _summary(a) -> str:
         lines += ["", "Why the finding is not stronger:", ""]
         lines += [f"- {reason}" for reason in a.verdict.reasons]
 
+    if getattr(a, "lag_scan", None) is not None and a.lag_scan.suspicious:
+        lines += [
+            "",
+            "> **Check the clocks before relying on this result.**",
+            ">",
+            f"> {a.lag_scan.explanation()}",
+            ">",
+            "> This is a diagnostic, not a finding. A correlation that appears only "
+            "when one set of times is shifted is not evidence of anything on its own - "
+            "it is a sign that one of the clocks or timezones is wrong. Correct the "
+            "clock, re-export the logs, and run the analysis again. The result of that "
+            "second run is what should be relied on; do not report a correlation at a "
+            "shifted offset.",
+        ]
+
     return "\n".join(lines)
 
 
@@ -591,6 +606,13 @@ def write_manifest(analysis, path: str | Path, outputs: list | None = None) -> P
         },
         "statistics": analysis.stats.to_dict(),
         "sensitivity": [s.to_dict() for s in analysis.sensitivity],
+        "clock_offset_scan": {
+            "best_lag_seconds": analysis.lag_scan.best_lag_s,
+            "coincidences_at_best_lag": analysis.lag_scan.best_hits,
+            "coincidences_as_recorded": analysis.lag_scan.hits_at_zero,
+            "searched_seconds": analysis.lag_scan.searched_s,
+            "flagged": analysis.lag_scan.suspicious,
+        },
         "floods": analysis.floods.to_dict(),
         "analysis_period": {
             "start_utc": str(pd.Timestamp(analysis.obs_start, unit="s", tz="UTC")),

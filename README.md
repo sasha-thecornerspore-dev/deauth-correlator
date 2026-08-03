@@ -583,6 +583,24 @@ the app, and a few models use port 8000 or 80 instead of 2020. Try
 clock skew, too few camera events, or a capture that only covers the incidents and so
 has no background to compare against.
 
+Look for a `*** CHECK THE CLOCKS ***` block in the output. After every run the tool asks
+whether the two streams would line up at some constant offset, and says so when they
+would:
+
+```
+*** CHECK THE CLOCKS ***
+  The camera events line up with the wireless disruptions if the camera times
+  are treated as 3597 s earlier than recorded (4 of 6 would coincide, against 0
+  as the data stands). This is almost exactly one hour, which nearly always
+  means a timezone or daylight-saving mismatch between the camera and the
+  network logs rather than a real delay.
+```
+
+That is a diagnostic, not a result. Fix the clock or the `--tz`, re-export, and run
+again — the second run is the one to rely on. **Never report a correlation found at a
+shifted offset**; a lag with no independent explanation is exactly the kind of finding
+that falls apart on cross-examination.
+
 ---
 
 ## Project layout

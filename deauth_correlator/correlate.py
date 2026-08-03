@@ -29,6 +29,7 @@ class Analysis:
     stats: st.WindowStats
     verdict: st.Verdict
     sensitivity: list = field(default_factory=list)
+    lag_scan: st.LagScan = field(default_factory=st.LagScan)
     floods: FloodReport = field(default_factory=FloodReport)
     inputs: list = field(default_factory=list)          # list[FileRecord]
     warnings: list = field(default_factory=list)
@@ -104,6 +105,13 @@ def run_analysis(events: pd.DataFrame, config: dict,
         sens = st.sensitivity(camera_used, incidents_used, obs_start, obs_end,
                               window_s, trials=min(trials, 2000))
 
+    # Would the two streams line up at some other offset? A clock an hour out
+    # turns a real correlation into a confident "none found". This runs on the
+    # unrestricted times: the analysis period is itself derived from the two
+    # streams as recorded, so restricting to it would move the shifted events
+    # out of range and hide the very thing being looked for.
+    lag_scan = st.scan_for_lag(camera_times, incident_times, window_s)
+
     # 5. Per-camera-event match table.
     matches = build_matches(camera, events, incidents, window_s, obs_start, obs_end)
 
@@ -121,6 +129,7 @@ def run_analysis(events: pd.DataFrame, config: dict,
         stats=analysis_stats,
         verdict=verdict,
         sensitivity=sens,
+        lag_scan=lag_scan,
         floods=flood_report,
         inputs=list(inputs or []),
         warnings=warnings,

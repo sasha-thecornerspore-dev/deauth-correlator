@@ -456,6 +456,92 @@ def _binom_sf(k: int, n: int, p: float) -> float:
     return min(max(total, 0.0), 1.0)
 
 
+@dataclass
+class LagScan:
+    """Result of asking whether the two streams line up at some other offset."""
+
+    best_lag_s: float = 0.0
+    best_hits: int = 0
+    hits_at_zero: int = 0
+    n_camera: int = 0
+    searched_s: float = 0.0
+
+    @property
+    def suspicious(self) -> bool:
+        """True when a shifted alignment beats the real one by enough to matter."""
+        if self.n_camera < 3 or abs(self.best_lag_s) < 1.0:
+            return False
+        return (self.best_hits >= self.hits_at_zero + 3
+                and self.best_hits >= 0.6 * self.n_camera
+                and self.best_hits >= 2 * max(self.hits_at_zero, 1))
+
+    def explanation(self) -> str:
+        lag = self.best_lag_s
+        magnitude = abs(lag)
+        if abs(magnitude - 3600) < 90:
+            likely = ("This is almost exactly one hour, which nearly always means a "
+                      "timezone or daylight-saving mismatch between the camera and "
+                      "the network logs rather than a real delay.")
+        elif abs(magnitude - 1800) < 60:
+            likely = ("This is almost exactly thirty minutes, which suggests a "
+                      "half-hour timezone offset was applied to one source and not "
+                      "the other.")
+        elif magnitude % 3600 < 120 or 3600 - (magnitude % 3600) < 120:
+            likely = ("This is close to a whole number of hours, which points to a "
+                      "timezone mismatch rather than a real delay.")
+        else:
+            likely = ("A clock on one of the devices is probably wrong by about this "
+                      "much; check the camera with 'camera probe' and the firewall "
+                      "with 'date -u'.")
+        direction = "later than" if lag > 0 else "earlier than"
+        return (f"The camera events line up with the wireless disruptions if the "
+                f"camera times are treated as {abs(lag):.0f} s {direction} recorded "
+                f"({self.best_hits} of {self.n_camera} would coincide, against "
+                f"{self.hits_at_zero} as the data stands). {likely}")
+
+
+def scan_for_lag(camera_times: np.ndarray, incident_times: np.ndarray,
+                 window_s: float, max_lag_s: float = 7200.0,
+                 max_candidates: int = 20000) -> LagScan:
+    """Look for a constant offset at which the two streams would align.
+
+    A camera whose clock is an hour out, or a ``--tz`` that does not match the
+    zone the camera writes, produces a confident "no correlation" from evidence
+    that in fact lines up perfectly once shifted. That silent false negative is
+    the most common way this analysis goes wrong in practice, so the tool checks
+    for it and says so.
+
+    This is a diagnostic, never a finding. A correlation that only appears at a
+    shifted offset means "go and check the clocks, correct them, and run again"
+    - not "there is a correlation at a lag".
+    """
+    scan = LagScan(n_camera=len(camera_times), searched_s=max_lag_s)
+    if len(camera_times) < 3 or len(incident_times) == 0:
+        return scan
+
+    scan.hits_at_zero = int(_count_hits(camera_times, incident_times, window_s))
+    scan.best_hits = scan.hits_at_zero
+
+    # The only lags worth testing are the ones that actually align some pair of
+    # events, so the candidates come from the observed differences rather than
+    # from a blind grid.
+    deltas = (incident_times[None, :] - camera_times[:, None]).ravel()
+    deltas = deltas[np.abs(deltas) <= max_lag_s]
+    if deltas.size == 0:
+        return scan
+    candidates = np.unique(np.round(deltas))
+    if candidates.size > max_candidates:
+        step = int(np.ceil(candidates.size / max_candidates))
+        candidates = candidates[::step]
+
+    for lag in candidates:
+        hits = _count_hits(camera_times + lag, incident_times, window_s)
+        if hits > scan.best_hits:
+            scan.best_hits = int(hits)
+            scan.best_lag_s = float(lag)
+    return scan
+
+
 def observation_period(camera_times: np.ndarray, disruption_times: np.ndarray,
                        pad_s: float = 0.0) -> tuple[float, float, list[str]]:
     """The window over which both evidence streams are actually in force.

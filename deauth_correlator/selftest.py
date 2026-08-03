@@ -24,6 +24,7 @@ import sqlite3
 import struct
 import sys
 import tempfile
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -84,36 +85,50 @@ def run_self_test(keep: str | None = None, verbose: bool = True) -> int:
         root = Path(tmp.name)
         cleanup = tmp
 
+    def section(number: int, title: str, body) -> None:
+        """Run one section, recording a crash as a failure rather than aborting.
+
+        A section that raises should not cost the results of the ones after it -
+        when something is broken you want the whole picture, not the first
+        traceback.
+        """
+        print(f"{'' if number == 1 else chr(10)}[{number}/8] {title}")
+        try:
+            body()
+        except Exception as exc:
+            check.that(False, f"section '{title}' ran to completion",
+                       f"{exc.__class__.__name__}: {exc}")
+            traceback.print_exc()
+
     try:
         print(f"Fixtures: {root}\n")
 
-        print("[1/8] Time handling")
-        _test_time(check)
+        state: dict = {}
+        section(1, "Time handling", lambda: _test_time(check))
+        section(2, "Frame decoding and reason codes", lambda: _test_frames(check))
 
-        print("\n[2/8] Frame decoding and reason codes")
-        _test_frames(check)
+        def parsers() -> None:
+            state["positive"] = _write_scenario(root / "positive", correlated=True,
+                                                seed=1)
+            state["negative"] = _write_scenario(root / "negative", correlated=False,
+                                                seed=99)
+            _test_parsers(check, state["positive"])
 
-        print("\n[3/8] Parsers over synthetic fixtures")
-        positive = _write_scenario(root / "positive", correlated=True, seed=1)
-        negative = _write_scenario(root / "negative", correlated=False, seed=99)
-        _test_parsers(check, positive)
+        section(3, "Parsers over synthetic fixtures", parsers)
 
-        print("\n[4/8] Positive scenario - a planted correlation must be found")
-        pos_analysis = _analyze(positive)
-        _test_positive(check, pos_analysis)
+        def positive() -> None:
+            state["pos_analysis"] = _analyze(state["positive"])
+            _test_positive(check, state["pos_analysis"])
 
-        print("\n[5/8] Negative scenario - random data must NOT produce a finding")
-        neg_analysis = _analyze(negative)
-        _test_negative(check, neg_analysis)
-
-        print("\n[6/8] Outputs and chain of custody")
-        _test_outputs(check, pos_analysis, root / "positive_output")
-
-        print("\n[7/8] The two statistics backends agree")
-        _test_backends(check)
-
-        print("\n[8/8] Degenerate inputs are handled honestly")
-        _test_edge_cases(check, root / "edge")
+        section(4, "Positive scenario - a planted correlation must be found", positive)
+        section(5, "Negative scenario - random data must NOT produce a finding",
+                lambda: _test_negative(check, _analyze(state["negative"])))
+        section(6, "Outputs and chain of custody",
+                lambda: _test_outputs(check, state["pos_analysis"],
+                                      root / "positive_output"))
+        section(7, "The two statistics backends agree", lambda: _test_backends(check))
+        section(8, "Degenerate inputs are handled honestly",
+                lambda: _test_edge_cases(check, root / "edge"))
 
     finally:
         if cleanup is not None:
@@ -551,6 +566,46 @@ def _test_edge_cases(check: Check, directory: Path) -> None:
     check.equal(result.stats.n_camera, 2,
                 "two entries close together within one source are left alone - they "
                 "are the operator's own data, not a duplicate import")
+
+    # A whole-hour timezone error turns a real correlation into a confident
+    # "none found". The tool must notice and say to check the clocks, without
+    # crying wolf on data that genuinely has no relationship.
+    # Irregular spacing matters here: a evenly-spaced sequence shifted by a
+    # multiple of its own period re-aligns with itself, which would make the
+    # test pass for the wrong reason.
+    truth = [100, 640, 1310, 2050, 2600, 3320, 4100, 4780, 5300, 6010,
+             6900, 7450, 8100, 8760, 9400, 10050]
+    disruptions = [event(BASE + timedelta(seconds=t), "deauth") for t in truth]
+    aligned = ([event(BASE + timedelta(seconds=t), "camera") for t in truth[:10]]
+               + disruptions)
+    shifted = ([event(BASE + timedelta(seconds=t + 3600), "camera")
+                for t in truth[:10]] + disruptions)
+
+    result = run_analysis(to_frame(shifted), config)
+    check.that(result.lag_scan.suspicious,
+               "an hour of clock skew is detected and flagged")
+    check.that(abs(abs(result.lag_scan.best_lag_s) - 3600) < 60,
+               "and the offset it reports is about an hour",
+               f"reported {result.lag_scan.best_lag_s:.0f} s")
+    check.that("one hour" in result.lag_scan.explanation(),
+               "and the wording names a timezone mismatch as the likely cause")
+    from .report import build_report as _build
+    check.that("diagnostic, not a finding" in _build(result),
+               "the report says the shifted alignment is a diagnostic, not a result")
+
+    result = run_analysis(to_frame(aligned), config)
+    check.that(not result.lag_scan.suspicious,
+               "correctly aligned evidence raises no clock warning")
+
+    import numpy as np
+    rng = np.random.default_rng(3)
+    unrelated = ([event(BASE + timedelta(seconds=float(t)), "camera")
+                  for t in rng.uniform(0, 14400, size=12)]
+                 + [event(BASE + timedelta(seconds=float(t)), "deauth")
+                    for t in rng.uniform(0, 14400, size=14)])
+    result = run_analysis(to_frame(unrelated), config)
+    check.that(not result.lag_scan.suspicious,
+               "genuinely unrelated data does not produce a spurious clock warning")
 
     # A missing input path is reported and skipped, not fatal.
     from .cli import load_evidence

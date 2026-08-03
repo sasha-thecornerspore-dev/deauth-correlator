@@ -364,6 +364,13 @@ def _print_summary(analysis, outdir: Path, written: list) -> None:
         for note in analysis.period_notes:
             print(f"  ! {note}")
 
+    if analysis.lag_scan.suspicious:
+        print("\n*** CHECK THE CLOCKS ***")
+        for line in _wrap(analysis.lag_scan.explanation(), 78):
+            print(f"  {line}")
+        print("  This is a diagnostic, not a finding. Correct the clock, re-export,")
+        print("  and re-run; do not report a correlation at a shifted offset.")
+
     print("\nWritten:")
     for path in written:
         print(f"  {path}")
@@ -505,6 +512,11 @@ def _directory_record(path: Path, role: str, parser_id: str, rows: int):
         note=f"directory of {len(entries)} file(s); the hash covers the file listing "
              f"and sizes, not the contents of each clip",
     )
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    import textwrap
+    return textwrap.wrap(text, width) or [""]
 
 
 def _slug(text: str) -> str:
