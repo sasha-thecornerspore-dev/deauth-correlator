@@ -5,6 +5,7 @@ build/
 dist/
 .venv/
 venv/
+.buildenv/
 
 # Analysis products - these are case material, not source
 output/
