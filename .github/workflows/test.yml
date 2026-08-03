@@ -1,0 +1,102 @@
+# Runs the tool's own --self-test on every combination of supported operating
+# system and Python version.
+#
+# --self-test is the whole test suite. It generates synthetic evidence for every
+# supported input format, runs the complete pipeline over it twice - once with a
+# planted correlation, once with independent random data - and checks that the
+# first is found and the second is not. There are 132 checks.
+#
+# No display server is needed, so there is no xvfb here. The Tkinter interface
+# lives in deauth_correlator/gui and is imported inside cli.main() only when
+# --gui is passed, and deauth_correlator/plot.py selects the Agg backend before
+# it imports pyplot. Nothing on the self-test path opens a window. Adding xvfb
+# would only hide that fact from whoever reads this file next.
+
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  self-test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      # Do not stop the other combinations when one fails. The self-test itself
+      # is written to report every failure rather than the first one, and the
+      # matrix should behave the same way: when something breaks you want to
+      # know whether it broke everywhere or only on one platform.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the package with every optional extra
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[all]"
+
+      - name: Record which statistics backend this job will use
+        run: |
+          python -c "from deauth_correlator import stats; print('SciPy present:', stats.HAVE_SCIPY)"
+
+      - name: Self-test
+        run: |
+          python -m deauth_correlator --self-test
+
+  self-test-without-scipy:
+    # scipy is an optional dependency, and without it the significance tests fall
+    # back to exact pure-Python implementations. The self-test compares the two
+    # backends against each other only when scipy is installed, so on every other
+    # job the fallback code is imported but never made to carry the analysis.
+    # This job is the one place where the numbers in the report come from the
+    # pure-Python path, which is what a machine without scipy would produce.
+    name: ubuntu-latest / Python 3.12 / without SciPy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install without the stats extra
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Confirm SciPy really is absent
+        run: |
+          python -c "from deauth_correlator import stats; assert not stats.HAVE_SCIPY, 'SciPy is installed, so this job would repeat the SciPy path instead of exercising the fallback'; print('statistics backend: pure-python')"
+
+      - name: Self-test
+        run: |
+          python -m deauth_correlator --self-test

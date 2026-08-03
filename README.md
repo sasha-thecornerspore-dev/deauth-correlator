@@ -35,6 +35,19 @@ within +/-30 s; 1.2 would be expected by chance (p = 1.47e-12, 13.8x the backgro
 
 ## Install
 
+### A standalone build, with no Python
+
+Download the archive for your platform from the
+[Releases page](https://github.com/sasha-thecornerspore-dev/deauth-correlator/releases)
+and unpack it. It contains `deauth-correlator` (command line) and
+`deauth-correlator-gui`, and needs nothing else installed.
+
+On macOS the app is not code-signed, so Gatekeeper will refuse it on a double-click:
+right-click the app and choose **Open**, then confirm. See
+[packaging/README.md](packaging/README.md) for the details and for building it yourself.
+
+### From source
+
 Python 3.10 or newer.
 
 ```bash
@@ -471,9 +484,18 @@ a **window sensitivity table** at ±10/15/30/60/120 s, so a reader can see the r
 holds across window widths rather than at one convenient value.
 
 **A correlation is only declared when all three of these hold:** at least 3
-coincidences, the strongest p-value below `--alpha` (default 0.01), and a rate ratio of
+coincidences, **every** p-value below `--alpha` (default 0.01), and a rate ratio of
 at least 2. Otherwise the verdict is `CORRELATION NOT ESTABLISHED` with the failing
 condition stated, or `INSUFFICIENT DATA`.
+
+The verdict rests on the *weakest* of the three tests, never the best. Taking the
+smallest of several p-values is the same error as running tests until one agrees. On
+null data where a single vehicle pass produces several camera rows — a second camera
+covering the same driveway, or a plate reader firing twice — the most-favourable-p rule
+declared a correlation in 11% of cases while printing "p < 0.01". Requiring every test
+to clear the threshold takes that to 0%, at a cost of about six percentage points of
+detection power in the hardest case. The measurement, and the script that reproduces it,
+are in [docs/VALIDATION.md](docs/VALIDATION.md).
 
 Two further things the tool does that matter more than they sound:
 
@@ -624,6 +646,26 @@ deauth_correlator/
                                                 gui/app.py        the six-tab interface
 ```
 
+## Documentation
+
+| Document | What it is for |
+| --- | --- |
+| [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) | Start here. An end-to-end tutorial from installation to a finished evidence bundle, including a dry run on synthetic data whose answer is already known. |
+| [SAFETY.md](SAFETY.md) | Exactly what the tool does on a network, with the greps to verify each claim. |
+| [docs/VALIDATION.md](docs/VALIDATION.md) | How often the tool is wrong, measured rather than asserted, and the script that reproduces the measurement. |
+| [packaging/README.md](packaging/README.md) | Building the standalone application for Windows and macOS. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, and the rule that any change to the statistics must not make a finding more likely. |
+| [SECURITY.md](SECURITY.md) | Reporting a vulnerability — including a result you believe is wrong, which is treated as security-critical. |
+| [CHANGELOG.md](CHANGELOG.md) | Release history. |
+
 ## License
 
-MIT. See [SAFETY.md](SAFETY.md) for the scope of what this tool does and does not do.
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Apache-2.0 was chosen over MIT for the express patent grant and the considerably
+stronger written warranty disclaimer. This tool produces documents that may be attached
+to a court filing, and "provided AS IS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND"
+being stated at length is worth having.
+
+See [SAFETY.md](SAFETY.md) for the scope of what this tool does and does not do, and
+section 10 of any generated report for what an analysis does and does not establish.

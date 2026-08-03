@@ -8,7 +8,8 @@ version = "1.0.0"
 description = "Read-only forensic correlation of wireless-disruption events with security-camera events"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 keywords = ["forensics", "802.11", "deauthentication", "opnsense", "onvif", "evidence"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",

@@ -1,0 +1,287 @@
+# Builds and publishes the artefacts for a v* tag.
+#
+# PyInstaller cannot cross-compile. A macOS application can only be produced on a
+# macOS machine and a Windows executable only on a Windows machine; there is no
+# flag, no target option and no supported trick that changes this. That is the
+# entire reason the standalone build is a three-way matrix instead of one Linux
+# job emitting all three artefacts.
+#
+# Everything here runs with contents: read except the final publish job, which
+# needs contents: write to create the release. The token used is the automatic
+# GITHUB_TOKEN that softprops/action-gh-release takes by default; this workflow
+# references no repository secrets.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify-tag:
+    # Every report and every MANIFEST.json records the tool version. Publishing a
+    # v1.1.0 release from a tree that still calls itself 1.0.0 would put a version
+    # into evidence that the code does not claim, so the tag and the source have to
+    # agree before anything is built.
+    name: Check the tag against the packaged version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compare the tag with deauth_correlator.__version__
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(python -c 'import sys, deauth_correlator; sys.stdout.write(deauth_correlator.__version__)')"
+          echo "tag: $tag"
+          echo "packaged version: $version"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match __version__ = $version in deauth_correlator/__init__.py"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  standalone:
+    name: Standalone build (${{ matrix.label }})
+    needs: verify-tag
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x86_64
+          - os: windows-latest
+            label: windows-x86_64
+          - os: macos-latest
+            label: macos-arm64
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the package, its extras and PyInstaller
+        # packaging/build.py drives PyInstaller. Installing it here rather than
+        # letting the build script bootstrap its own toolchain keeps what the
+        # runner downloaded visible in the log.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[all]"
+          python -m pip install pyinstaller
+
+      - name: Self-test before building
+        # A tag can be pushed onto a commit that never went through test.yml.
+        # Running the checks here means a published binary has at least passed
+        # them on the machine that produced it.
+        run: |
+          python -m deauth_correlator --self-test
+
+      - name: Build
+        run: |
+          python packaging/build.py
+
+      - name: Collect the build output into one archive
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify-tag.outputs.version }}
+          LABEL: ${{ matrix.label }}
+        run: |
+          python - <<'PY'
+          import os
+          import platform
+          import shutil
+          import sys
+          from pathlib import Path
+
+          dist = Path("dist")
+          entries = sorted(dist.iterdir()) if dist.is_dir() else []
+          if not entries:
+              sys.exit("packaging/build.py left nothing in dist/; there is no artefact "
+                       "to publish and an empty release would be worse than a failed one.")
+
+          staging = Path("staging")
+          staging.mkdir(exist_ok=True)
+          base = staging / f"deauth-correlator-{os.environ['VERSION']}-{os.environ['LABEL']}"
+
+          # zip on Windows because a Windows machine opens one without extra tooling.
+          # tar.gz elsewhere because a zip written by Python does not restore the
+          # executable bit on extraction, and a binary that will not run is not an
+          # artefact.
+          archive = shutil.make_archive(
+              str(base), "zip" if platform.system() == "Windows" else "gztar",
+              root_dir=dist)
+
+          print("packed from dist/:", ", ".join(p.name for p in entries))
+          print(f"archive: {archive} ({os.path.getsize(archive)} bytes)")
+          PY
+
+      - name: Upload the standalone build
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-${{ matrix.label }}
+          path: staging/*
+          if-no-files-found: error
+
+  sdist-wheel:
+    name: Source distribution and wheel
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the sdist and the wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Install the wheel and run the self-test against it
+        # The working directory is changed first. Running from the repository root
+        # would import deauth_correlator from the source tree next to it, which
+        # would test the checkout rather than the wheel about to be published.
+        run: |
+          python -m pip install "$(ls dist/*.whl)[all]"
+          cd "$(mktemp -d)"
+          python -m deauth_correlator --self-test
+
+      - name: Upload the sdist and wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist-wheel
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish the GitHub Release
+    needs: [verify-tag, standalone, sdist-wheel]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download every build artefact
+        uses: actions/download-artifact@v4
+        with:
+          path: artefacts
+          merge-multiple: true
+
+      - name: Hash the artefacts and write the release notes
+        env:
+          VERSION: ${{ needs.verify-tag.outputs.version }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          files = sorted(p for p in Path("artefacts").iterdir() if p.is_file())
+          if not files:
+              raise SystemExit("no artefacts were downloaded; refusing to publish an "
+                               "empty release.")
+
+          digests = []
+          for path in files:
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              digests.append((digest.hexdigest(), path.name))
+
+          checksums = "\n".join(f"{value}  {name}" for value, name in digests)
+          Path("SHA256SUMS.txt").write_text(checksums + "\n", encoding="utf-8")
+          print(checksums)
+
+          wheels = [name for _, name in digests if name.endswith(".whl")]
+          wheel = wheels[0] if wheels else f"deauth_correlator-{version}-py3-none-any.whl"
+
+          notes = f"""deauth-correlator {version} - read-only forensic correlation of
+          wireless disruption events with security-camera events. It reads capture
+          files, logs and camera events. It never transmits 802.11 frames.
+
+          ## Verify before you use it
+
+          Check the download against the list below and record the hash in the case
+          file alongside the hashes the tool itself produces.
+
+          ```
+          sha256sum -c SHA256SUMS.txt              # Linux, macOS
+          Get-FileHash <file> -Algorithm SHA256    # Windows PowerShell
+          ```
+
+          The Windows and macOS builds are not code-signed, so SmartScreen and
+          Gatekeeper will object to both. Compare the SHA-256 rather than relying on
+          the operating system's opinion of an unsigned binary.
+
+          ## Which file to take
+
+          Each standalone archive is built on the operating system it targets.
+          PyInstaller cannot cross-compile, so the macOS build comes from a macOS
+          runner and the Windows build from a Windows runner; there is no such thing
+          here as a macOS build produced on Windows.
+
+          If you already have Python 3.10 or newer, prefer the wheel:
+
+          ```
+          pip install "{wheel}[all]"
+          python -m deauth_correlator --self-test
+          ```
+
+          The self-test runs 132 checks over synthetic evidence in every supported
+          input format. Run it once on the machine that will do the analysis, and
+          note the result: it is the simplest answer to a question about whether the
+          software worked.
+
+          ## SHA-256
+
+          ```
+          {checksums}
+          ```
+          """
+          Path("RELEASE_NOTES.md").write_text(notes.strip() + "\n", encoding="utf-8")
+          PY
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: deauth-correlator ${{ needs.verify-tag.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            artefacts/*
+            SHA256SUMS.txt
+          fail_on_unmatched_files: true
