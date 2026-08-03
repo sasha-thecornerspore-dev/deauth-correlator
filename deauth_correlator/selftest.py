@@ -513,6 +513,45 @@ def _test_edge_cases(check: Check, directory: Path) -> None:
         check.equal(numbers, list(range(1, 12)),
                     f"the report keeps all eleven sections when {label}")
 
+    # The same vehicle pass listed by two camera sources must be counted once.
+    # Double-counting raises the number of passes and the number of coincidences
+    # together, which pushes the p-value towards significance - the one
+    # direction this tool must never drift in.
+    def camera_from(source: str, seconds: float, plate: str = "") -> dict:
+        row = event(BASE + timedelta(seconds=seconds), "camera")
+        row["source_file"] = source
+        row["plate"] = plate
+        return row
+
+    duplicated = [camera_from("passes.csv", i * 300, plate=f"PLATE{i}")
+                  for i in range(6)]
+    duplicated += [camera_from("clips/", i * 300 + 0.4) for i in range(6)]
+    duplicated += [event(BASE + timedelta(seconds=i * 300 + 4), "deauth")
+                   for i in range(6)]
+
+    config = AppConfig(timezone=TZ, trials=500).analysis_dict()
+    merged = run_analysis(to_frame(duplicated), config)
+    check.equal(merged.stats.n_camera, 6,
+                "a pass listed in both a camera CSV and a clip folder is counted once")
+    check.that(any("duplicates" in w for w in merged.warnings),
+               "and the de-duplication is disclosed in the report warnings")
+    kept = merged.events[merged.events["category"] == "camera"]
+    check.that(all(str(p or "").startswith("PLATE") for p in kept["plate"]),
+               "the surviving row is the one carrying the plate, not the bare clip")
+
+    config_off = AppConfig(timezone=TZ, trials=500,
+                           camera_dedupe_s=0.0).analysis_dict()
+    unmerged = run_analysis(to_frame(duplicated), config_off)
+    check.equal(unmerged.stats.n_camera, 12,
+                "--camera-dedupe 0 leaves both copies in place")
+
+    same_file = [camera_from("passes.csv", 0.0), camera_from("passes.csv", 0.5)]
+    same_file += [event(BASE + timedelta(seconds=4), "deauth")]
+    result = run_analysis(to_frame(same_file), config)
+    check.equal(result.stats.n_camera, 2,
+                "two entries close together within one source are left alone - they "
+                "are the operator's own data, not a duplicate import")
+
     # A missing input path is reported and skipped, not fatal.
     from .cli import load_evidence
     directory.mkdir(parents=True, exist_ok=True)

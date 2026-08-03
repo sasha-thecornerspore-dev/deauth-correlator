@@ -144,6 +144,11 @@ def build_parser() -> argparse.ArgumentParser:
                              metavar="SECONDS",
                              help="Disruption events within this long of each other "
                                   "count as one incident (default: 10).")
+    correlation.add_argument("--camera-dedupe", type=float, default=2.0,
+                             metavar="SECONDS",
+                             help="Camera events this close together from different "
+                                  "sources are treated as one pass recorded twice "
+                                  "(default: 2). Use 0 to disable.")
     correlation.add_argument("--flood-window", type=float, default=10.0,
                              metavar="SECONDS", help="Flood detection window "
                                                      "(default: 10).")
@@ -209,6 +214,7 @@ def _config_from_args(args) -> AppConfig:
         handshake_window_s=args.handshake_window,
         reassoc_window_s=args.reassoc_window,
         incident_gap_s=args.incident_gap,
+        camera_dedupe_s=args.camera_dedupe,
         flood_window_s=args.flood_window,
         flood_threshold=args.flood_threshold,
         outdir=args.outdir,

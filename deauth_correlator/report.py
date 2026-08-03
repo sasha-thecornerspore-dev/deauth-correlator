@@ -434,6 +434,8 @@ def _methodology(a) -> str:
         "messages are grouped into one join |",
         f"| Incident grouping | {cfg.get('incident_gap_s', 10)} s | how disruption "
         "events are grouped into incidents |",
+        f"| Camera de-duplication | {cfg.get('camera_dedupe_s', 2)} s | how close two "
+        "camera sources must be to count as one pass recorded twice |",
         f"| Flood threshold | {cfg.get('flood_threshold', 5)} frames / "
         f"{cfg.get('flood_window_s', 10)} s | when a burst is called a flood |",
         f"| Camera clock offset applied | {cfg.get('camera_clock_offset_s', 0):+g} s | "

@@ -73,7 +73,12 @@ def run_analysis(events: pd.DataFrame, config: dict,
     if drops:
         events = ev.to_frame(events.to_dict("records") + drops)
 
-    # 2. Collapse disruptions into physical incidents for the statistics.
+    # 2. Merge camera events that describe the same pass recorded twice.
+    events, dedupe_notes = dedupe_camera_events(
+        events, window_s=float(config.get("camera_dedupe_s", 2.0)))
+    warnings.extend(dedupe_notes)
+
+    # 3. Collapse disruptions into physical incidents for the statistics.
     incidents = cluster_incidents(events, gap_s=incident_gap)
 
     camera = ev.cameras(events).sort_values("ts_utc")
@@ -125,6 +130,74 @@ def run_analysis(events: pd.DataFrame, config: dict,
         config=dict(config),
         provenance=provenance or Provenance.collect(),
     )
+
+
+def dedupe_camera_events(events: pd.DataFrame, window_s: float = 2.0):
+    """Collapse the same vehicle pass recorded by two different sources.
+
+    Pointing the tool at both a camera-event CSV and the folder of clips those
+    events came from is the natural thing to do, and it lists every pass twice.
+    Left alone that inflates the number of camera events and the number of
+    coincidences together, which pushes the statistics in the direction of
+    finding a correlation - the one direction an evidential tool must never
+    drift in.
+
+    Only events from *different* source files are merged, and only when they
+    fall within ``window_s`` of each other. Two entries at the same instant in
+    the same file are the operator's own data and are left as they are. The
+    surviving row is the one carrying the most identifying detail.
+    """
+    notes: list[str] = []
+    if events.empty or window_s <= 0:
+        return events, notes
+
+    camera = events[events["category"] == ev.CAMERA]
+    if len(camera) < 2:
+        return events, notes
+
+    camera = camera.sort_values("ts_utc")
+    times = _epoch(camera["ts_utc"])
+    indices = camera.index.to_list()
+
+    drop: list = []
+    merged_pairs = 0
+    group_start = 0
+    for position in range(1, len(indices) + 1):
+        at_end = position == len(indices)
+        if not at_end and times[position] - times[position - 1] <= window_s:
+            continue
+
+        group = indices[group_start:position]
+        group_start = position
+        if len(group) < 2:
+            continue
+
+        rows = camera.loc[group]
+        if rows["source_file"].nunique() < 2:
+            continue  # one source listing the same pass twice: not ours to merge
+
+        keeper = max(group, key=lambda i: _detail_score(camera.loc[i]))
+        for index in group:
+            if index != keeper:
+                drop.append(index)
+        merged_pairs += 1
+
+    if not drop:
+        return events, notes
+
+    kept_note = (f"{len(drop)} camera event(s) were removed as duplicates: "
+                 f"{merged_pairs} vehicle pass(es) appeared in more than one camera "
+                 f"source within {window_s:g} s. Counting the same pass twice would "
+                 f"inflate both the number of passes and the number of coincidences. "
+                 f"The entry carrying the most detail was kept in each case.")
+    notes.append(kept_note)
+    return events.drop(index=drop).reset_index(drop=True), notes
+
+
+def _detail_score(row) -> int:
+    """How much identifying detail a camera row carries, for choosing a survivor."""
+    return sum(1 for field in ("plate", "make", "model", "notes")
+               if str(row.get(field) or "").strip())
 
 
 def build_matches(camera: pd.DataFrame, all_events: pd.DataFrame,

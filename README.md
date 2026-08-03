@@ -510,6 +510,7 @@ deauth-correlator camera {probe|snapshot|watch|help} [options]
 | `--reassoc-window SECONDS` | 120 | a repeat DHCP handshake this soon is a client drop |
 | `--handshake-window SECONDS` | 10 | lease messages this close are one join |
 | `--incident-gap SECONDS` | 10 | disruptions this close are one incident |
+| `--camera-dedupe SECONDS` | 2 | camera events this close from *different* sources are one pass recorded twice; `0` disables |
 | `--flood-threshold N` | 5 | frames within the flood window that make a flood |
 | `--flood-window SECONDS` | 10 | flood detection window |
 | `--no-sensitivity` | off | skip the multi-window table |

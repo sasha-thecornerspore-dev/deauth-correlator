@@ -45,6 +45,7 @@ class AppConfig:
     handshake_window_s: float = 10.0
     reassoc_window_s: float = 120.0
     incident_gap_s: float = 10.0
+    camera_dedupe_s: float = 2.0
 
     # Flood detection
     flood_window_s: float = 10.0
@@ -73,6 +74,7 @@ class AppConfig:
             "handshake_window_s": self.handshake_window_s,
             "reassoc_window_s": self.reassoc_window_s,
             "incident_gap_s": self.incident_gap_s,
+            "camera_dedupe_s": self.camera_dedupe_s,
             "flood_window_s": self.flood_window_s,
             "flood_threshold": self.flood_threshold,
             "camera_clock_offset_s": self.camera_clock_offset_s,

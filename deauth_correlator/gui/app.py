@@ -353,6 +353,10 @@ class App(ttk.Frame):
             grid, "Incident grouping (s)", 10, value="10",
             hint="Disruptions this close are one incident.")
         self.incident_gap.pack(anchor="w", pady=3)
+        self.camera_dedupe = LabeledEntry(
+            grid, "Camera de-duplication (s)", 10, value="2",
+            hint="One pass in two camera sources is counted once. 0 disables.")
+        self.camera_dedupe.pack(anchor="w", pady=3)
         self.flood_threshold = LabeledEntry(grid, "Flood threshold (frames)", 10,
                                             value="5")
         self.flood_threshold.pack(anchor="w", pady=3)
@@ -906,6 +910,7 @@ class App(ttk.Frame):
             handshake_window_s=_float(self.handshake_window.get(), 10.0),
             reassoc_window_s=_float(self.reassoc_window.get(), 120.0),
             incident_gap_s=_float(self.incident_gap.get(), 10.0),
+            camera_dedupe_s=_float(self.camera_dedupe.get(), 2.0),
             flood_window_s=_float(self.flood_window.get(), 10.0),
             flood_threshold=_int(self.flood_threshold.get(), 5),
             outdir=self.outdir.get() or "output",
@@ -938,6 +943,7 @@ class App(ttk.Frame):
         self.handshake_window.set(c.handshake_window_s)
         self.reassoc_window.set(c.reassoc_window_s)
         self.incident_gap.set(c.incident_gap_s)
+        self.camera_dedupe.set(c.camera_dedupe_s)
         self.flood_window.set(c.flood_window_s)
         self.flood_threshold.set(c.flood_threshold)
         if c.outdir:

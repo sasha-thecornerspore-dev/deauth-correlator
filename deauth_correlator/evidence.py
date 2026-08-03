@@ -220,7 +220,12 @@ def _read_me(analysis, result: BundleResult) -> str:
         f"{LAYOUT['events']:<28} every event parsed from every source",
         f"{LAYOUT['incidents']:<28} disruptions grouped into incidents",
         f"{LAYOUT['inputs']:<28} unmodified copies of the source files",
-        f"{LAYOUT['exhibits']:<28} camera snapshots and attached exhibits",
+    ]
+    # Only describe the exhibits folder when there is one; a cover sheet that
+    # lists a folder the reader cannot find undermines the rest of it.
+    if (result.root / LAYOUT["exhibits"]).exists():
+        lines.append(f"{LAYOUT['exhibits']:<28} camera snapshots and attached exhibits")
+    lines += [
         f"{LAYOUT['custody']:<28} timestamped log of how this bundle was built",
         "",
         "HOW TO VERIFY THE SOURCE FILES ARE UNALTERED",
