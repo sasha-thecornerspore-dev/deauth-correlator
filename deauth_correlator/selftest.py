@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 
 from . import __version__, __tool_name__
 from .config import AppConfig
+from .camera.recorder import MotionRecorder
 from .correlate import run_analysis
 from .events import BROADCAST, norm_mac
 from .parsers.dot11 import DLT_IEEE802_11_RADIOTAP, build_deauth_frame
@@ -92,7 +93,7 @@ def run_self_test(keep: str | None = None, verbose: bool = True) -> int:
         when something is broken you want the whole picture, not the first
         traceback.
         """
-        print(f"{'' if number == 1 else chr(10)}[{number}/9] {title}")
+        print(f"{'' if number == 1 else chr(10)}[{number}/10] {title}")
         try:
             body()
         except Exception as exc:
@@ -131,6 +132,8 @@ def run_self_test(keep: str | None = None, verbose: bool = True) -> int:
                 lambda: _test_edge_cases(check, root / "edge"))
         section(9, "Routine network traffic is not mistaken for evidence",
                 lambda: _test_no_fabrication(check))
+        section(10, "The read-only and chain-of-custody guarantees hold",
+                lambda: _test_guarantees(check, root / "guarantees"))
 
     finally:
         if cleanup is not None:
@@ -778,6 +781,147 @@ def _test_no_fabrication(check: Check) -> None:
     check.that(all(str(v) != "nan" for v in matches["plate"]),
                "a blank plate in a mixed column does not become the text 'nan'",
                f"got {list(matches['plate'])}")
+
+
+def _test_guarantees(check: Check, directory: Path) -> None:
+    """Regressions for the promises SAFETY.md makes to an auditing reader.
+
+    Each of these was found by an independent review of the published 1.0.0, and
+    each was a case where the documentation described behaviour the code did not
+    have. A claim in a document that invites verification has to stay true.
+
+    Everything here tests behaviour rather than source text. An earlier version
+    read the source with ``inspect.getsource``, which works from a checkout and
+    raises ``OSError`` inside a frozen build - so the checks that mattered most
+    were exactly the ones that could not run in the artefact people download.
+    """
+    import struct as _struct
+
+    from . import cli as cli_module
+    from .camera import recorder as recorder_module
+    from .camera.onvif_min import OnvifClient, OnvifError
+    from .camera.tapo import CameraConfig
+    from .parsers.dot11 import decode_packet
+
+    directory.mkdir(parents=True, exist_ok=True)
+
+    # -- the ONVIF client must talk to the camera and to nothing else --------
+    client = OnvifClient("192.0.2.1", username="u", password="p")
+    check.that(client.session.trust_env is False,
+               "the ONVIF session ignores proxy environment variables, so the "
+               "credential header cannot be routed to a proxy")
+
+    sent: dict = {}
+
+    class _Reply:
+        status_code = 200
+        content = b"<s:Envelope xmlns:s='http://www.w3.org/2003/05/soap-envelope'/>"
+        headers: dict = {}
+
+    def _capture(url, **kwargs):
+        sent.update(kwargs)
+        sent["url"] = url
+        return _Reply()
+
+    client.session.post = _capture
+    client.call(client.device_url, "<tds:GetSystemDateAndTime/>", authenticated=False)
+    check.equal(sent.get("allow_redirects"), False,
+                "every ONVIF request is sent with redirects disabled")
+
+    class _Redirect:
+        status_code = 307
+        content = b""
+        headers = {"Location": "http://elsewhere.example/onvif"}
+
+    client.session.post = lambda url, **kwargs: _Redirect()
+    try:
+        client.call(client.device_url, "<tds:GetSystemDateAndTime/>",
+                    authenticated=False)
+        check.that(False, "a redirect reply is refused rather than followed")
+    except OnvifError as exc:
+        check.that("redirect" in str(exc).lower(),
+                   "a redirect reply is refused rather than followed")
+
+    # -- the recorder must not touch the camera once stop has been asked for -
+    config = CameraConfig(host="192.0.2.1", username="u", password="p")
+    recorder = MotionRecorder(config, directory / "camera_events.csv",
+                              save_snapshots=False)
+
+    created: list = []
+
+    class _CountingClient:
+        def __init__(self, *args, **kwargs):
+            created.append(1)
+
+        def create_pull_point(self, *args, **kwargs):
+            return "http://192.0.2.1:2020/sub"
+
+    original = recorder_module.OnvifClient
+    recorder_module.OnvifClient = _CountingClient
+    try:
+        recorder._stop.set()
+        result = recorder._resubscribe()
+        check.that(result is False and not created,
+                   "no subscription is created once a stop has been requested",
+                   f"returned {result!r} after {len(created)} client(s)")
+    finally:
+        recorder_module.OnvifClient = original
+
+    check.that(recorder_module.MAX_RESUBSCRIBE_ATTEMPTS >= 1
+               and 0 < recorder_module.RESUBSCRIBE_BACKOFF_S
+               <= recorder_module.MAX_RESUBSCRIBE_BACKOFF_S,
+               "re-subscription gives up after a bounded number of attempts")
+
+    # -- an input file is hashed before anything reads it -------------------
+    order: list = []
+    sample = directory / "order.csv"
+    sample.write_text("timestamp,plate,make,model,notes\n"
+                      "2026-07-14T18:00:00-04:00,ABC123,,,pass\n",
+                      encoding="utf-8")
+
+    real_sha = cli_module.sha256_file
+    real_parse = cli_module.parse_path
+
+    def _sha(path):
+        order.append("hash")
+        return real_sha(path)
+
+    def _parse(*args, **kwargs):
+        order.append("parse")
+        return real_parse(*args, **kwargs)
+
+    cli_module.sha256_file = _sha
+    cli_module.parse_path = _parse
+    try:
+        cli_module.load_evidence(
+            AppConfig(camera_events=[str(sample)], timezone=TZ),
+            None, log=lambda *a, **k: None)
+    finally:
+        cli_module.sha256_file = real_sha
+        cli_module.parse_path = real_parse
+
+    check.equal(order[:2], ["hash", "parse"],
+                "an input file is hashed before it is parsed, as the report claims")
+
+    # -- a protected frame must not have ciphertext read as a reason code ---
+    def mac_bytes(value: str) -> bytes:
+        return bytes(int(part, 16) for part in norm_mac(value).split(":"))
+
+    protected = bytearray(build_deauth_frame(
+        mac_bytes(ATTACKER_MAC), mac_bytes(BROADCAST), mac_bytes(AP_BSSID), reason=7))
+    _struct.pack_into("<H", protected, 0,
+                      _struct.unpack_from("<H", protected, 0)[0] | 0x4000)
+    frame = decode_packet(bytes(protected), 105)
+    check.that(frame is not None and frame.reason_code is None and frame.protected,
+               "a protected management frame yields no reason code")
+
+    # -- a build whose graphical interface is dead must be detectable --------
+    flags = {opt for action in cli_module.build_parser()._actions
+             for opt in action.option_strings}
+    check.that("--check-runtime" in flags,
+               "--check-runtime exists so a build with a dead GUI can be detected")
+    check.equal(cli_module._check_runtime(), 0,
+                "--check-runtime reports this environment as complete")
 
 
 # -- fixture generation ----------------------------------------------------

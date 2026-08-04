@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "deauth-correlator"
-version = "1.0.0"
+version = "1.0.1"
 description = "Read-only forensic correlation of wireless-disruption events with security-camera events"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -46,5 +46,3 @@ deauth-correlator-gui = "deauth_correlator.gui.app:launch"
 [tool.setuptools.packages.find]
 include = ["deauth_correlator*"]
 
-[tool.setuptools.package-data]
-deauth_correlator = ["py.typed"]

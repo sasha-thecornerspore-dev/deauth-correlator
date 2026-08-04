@@ -57,13 +57,21 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def record_file(path: str | os.PathLike, role: str, parser: str = "",
-                rows: int = 0, note: str = "") -> FileRecord:
+                rows: int = 0, note: str = "",
+                sha256: str | None = None) -> FileRecord:
+    """Describe one file for the chain of custody.
+
+    ``sha256`` accepts a digest taken earlier. Callers that must hash before
+    reading - which is what the report and the evidence bundle tell the reader
+    happened - pass the value they already computed rather than making this
+    function read the file a second time.
+    """
     p = Path(path)
     st = p.stat()
     return FileRecord(
         path=str(p.resolve()),
         role=role,
-        sha256=sha256_file(p),
+        sha256=sha256 if sha256 is not None else sha256_file(p),
         size_bytes=st.st_size,
         modified_utc=datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
         .isoformat(timespec="seconds"),

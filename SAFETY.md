@@ -21,17 +21,38 @@ To confirm this yourself:
 grep -rnE "AF_PACKET|SOCK_RAW|scapy|aireplay|mdk[34]|sendp\(|\.inject" deauth_correlator/
 grep -rn "socket" deauth_correlator/
 grep -rnE "subprocess|os\.system|popen|os\.exec" deauth_correlator/
+grep -rnE "webbrowser|startfile|requests\.|urllib|http" deauth_correlator/
 ```
 
-Those three greps return exactly four things, and nothing else. Each is listed here so a
-hit does not have to be chased down:
+Note the fourth grep. The first three do **not** catch the ONVIF client, which is where
+all of this program's real network traffic originates: it is built on `requests`, not on
+sockets directly, so `grep socket` misses it entirely. Nor do they catch
+`webbrowser.open` or `os.startfile`. An earlier version of this document listed only the
+first three and claimed they enumerated everything, which was wrong. If you are auditing
+this, run all four.
+
+Together they return the following, and nothing else. Each is listed so a hit does not
+have to be chased down:
 
 | Hit | Location | What it is |
 | --- | --- | --- |
-| `aireplay-ng, mdk4` | `events.py:47` | a comment explaining why reason codes 1 and 7 are notable |
+| `aireplay-ng, mdk4` | `events.py:48` | a comment explaining why reason codes 1 and 7 are notable |
 | `socket.create_connection` | `camera/tapo.py::_port_open` | a TCP connect to the camera's RTSP port to check it is open, closed immediately |
 | `socket.gethostname` | `hashing.py::Provenance.collect` | reads this machine's name for the report header; no network traffic |
-| `subprocess.run(["open"/"xdg-open", path])` | `gui/app.py::_open_path` | asks the desktop to open an output file the tool just wrote, when you click "Open report.md". macOS and Linux only; Windows uses `os.startfile`. The argument is always a path under your own output directory |
+| `subprocess.run(["open"/"xdg-open", path])` | `gui/app.py::_open_path` | asks the desktop to open an output file the tool just wrote, when you click "Open report.md". macOS and Linux only |
+| `os.startfile(path)` | `gui/app.py::_open_path` | the same thing on Windows |
+| `webbrowser.open(path.as_uri())` | `gui/app.py::_open_path` | last-resort fallback for the same action, handed a `file://` URI pointing inside your own output directory. It is reached only if the two calls above raise |
+| `requests.Session()`, `session.post(...)` | `camera/onvif_min.py` | the ONVIF client. Every request goes to the camera address you entered and nowhere else — see the two settings below that make that true |
+
+Two properties of that session are worth checking by eye, because without them the
+"nowhere else" claim above would be false:
+
+- `self.session.trust_env = False`. A stock `requests` session honours `HTTP_PROXY` from
+  the environment, which on a machine with a proxy configured would send every ONVIF
+  request — including the WS-Security header carrying your camera username and password
+  digest — to the proxy instead of the camera.
+- `allow_redirects=False` on every call. A device answering with a redirect would
+  otherwise cause that same header to be re-sent to whatever host the reply names.
 
 `build_deauth_frame` in `parsers/dot11.py` constructs deauthentication frame *bytes*. It
 exists so the self-test can generate realistic capture files, and it is called only from
@@ -42,7 +63,9 @@ network interface.
 
 **Files on disk.** Log files, capture files, SQLite databases, CSVs and clip filenames
 that you pass on the command line or attach in the interface. Opened read-only. The
-Kismet reader opens its database with SQLite's `mode=ro` URI flag.
+Kismet reader opens its database with SQLite's `mode=ro` URI flag. Each file is hashed
+with SHA-256 before it is parsed, so the digest in the report bounds exactly the bytes
+that were analysed.
 
 **Your camera, when you ask it to.** The camera features are inactive unless you supply
 a host address and credentials. When active they perform:
@@ -51,7 +74,7 @@ a host address and credentials. When active they perform:
 | --- | --- | --- |
 | `GetSystemDateAndTime` | read | unauthenticated per the ONVIF specification; used to measure clock error |
 | `GetDeviceInformation` | read | model, firmware, serial for the report |
-| `GetProfiles`, `GetStreamUri`, `GetSnapshotUri` | read | stream discovery |
+| `GetProfiles`, `GetStreamUri` | read | stream discovery |
 | RTSP connect and frame grab | read | one frame kept as a JPEG exhibit |
 | `CreatePullPointSubscription`, `PullMessages`, `Renew` | event subscription | the one operation that creates remote state |
 | `Unsubscribe` | cleanup | removes it |

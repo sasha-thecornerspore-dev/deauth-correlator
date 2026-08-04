@@ -4,7 +4,7 @@
 # --self-test is the whole test suite. It generates synthetic evidence for every
 # supported input format, runs the complete pipeline over it twice - once with a
 # planted correlation, once with independent random data - and checks that the
-# first is found and the second is not. There are 132 checks.
+# first is found and the second is not. There are 141 checks.
 #
 # No display server is needed, so there is no xvfb here. The Tkinter interface
 # lives in deauth_correlator/gui and is imported inside cli.main() only when

@@ -32,11 +32,15 @@ So:
 
 `packaging/build.py` states which platform it is running on before it starts,
 and produces artefacts for that platform only. If you need both, build twice on
-two machines, or run the build on a CI service that offers both runner images:
-one `windows-latest` job and one `macos-latest` job, each running
-`python packaging/build.py --archive` and publishing what it produced. There is
-no CI workflow checked into this repository at present; the two jobs are the
-whole of what one would need to contain.
+two machines, or let CI do it.
+
+That is what `.github/workflows/release.yml` in this repository does. On a `v*`
+tag it runs a three-way matrix - `ubuntu-latest`, `windows-latest` and
+`macos-latest` - each job running `python packaging/build.py` (without
+`--archive`; the workflow packs the result itself so it can apply the macOS
+rules described below), then attaches the three archives, the sdist, the wheel
+and a `SHA256SUMS.txt` to the GitHub Release. `.github/workflows/test.yml`
+separately runs the self-test across all three platforms on every push.
 
 ---
 
@@ -168,7 +172,7 @@ executable is 17.5 MiB and the rest is `_internal`. Where that goes:
 | pandas                   | 14 MiB  |
 | Pillow                   | 11 MiB  |
 | Tcl/Tk                   | 6 MiB   |
-| Time zone database       | 2 MiB   |
+| Time zone database       | 0.5 MiB |
 
 Leaving out `opencv-python` therefore removes about a third of the total, and
 leaving out `scipy` as well removes about a further fifth. Both are legitimate
@@ -203,7 +207,7 @@ because they are also how you check an application someone hands you.
 
 ```bash
 ./deauth-correlator --version         # deauth-correlator 1.0.0
-./deauth-correlator --self-test       # SELF-TEST PASSED: all 132 checks passed.
+./deauth-correlator --self-test       # SELF-TEST PASSED: all 141 checks passed.
 ./deauth-correlator --list-parsers
 ```
 

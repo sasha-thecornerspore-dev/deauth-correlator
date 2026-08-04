@@ -115,11 +115,15 @@ path that opens a raw socket. Camera access is read-only and only against a came
 configure it to reach.
 
 That claim is meant to be checkable rather than taken on trust. `SAFETY.md` states it in
-full and gives three greps that enumerate every network-adjacent and process-spawning
-call in the package, together with a table naming each of the four hits they return and
-explaining what it is. If you run them and get a fifth hit, or if any entry in that table
-does not match what the code actually does, that is a security report and it goes through
-the private advisory process above.
+full and gives four greps covering every network-adjacent and process-spawning call in
+the package, together with a table naming each hit they return and explaining what it is.
+If you run them and get a hit the table does not list, or if any entry in that table does
+not match what the code actually does, that is a security report and it goes through the
+private advisory process above.
+
+That has already happened once. An earlier revision listed only three greps and claimed
+they were exhaustive; they missed the ONVIF client entirely, because it is built on
+`requests` rather than on sockets directly. The fourth grep exists because of that.
 
 `SAFETY.md` also documents what the camera integration does on the device: six read
 operations, one standard ONVIF pull-point subscription that the camera expires on its own

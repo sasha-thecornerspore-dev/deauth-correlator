@@ -7,6 +7,75 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Because
 output of this tool is used as evidence, any change to how a verdict is reached will be
 listed explicitly, with the direction of its effect stated.
 
+## [1.0.1] - 2026-08-03
+
+An independent review of the published 1.0.0 found thirteen defects. None changes how a
+verdict is reached, so no analysis result differs between 1.0.0 and 1.0.1. Three of them
+weaken the read-only guarantee and four were statements in the documentation that the
+code did not honour — the latter matter here because `SAFETY.md` invites the reader to
+verify its claims, and a claim that does not survive checking is worse than no claim.
+
+### Security
+
+- **The ONVIF client honoured `HTTP_PROXY` from the environment.** `requests.Session`
+  trusts the environment by default, so on a machine with a proxy configured every ONVIF
+  request — including the WS-Security header carrying the camera username and the
+  password digest, nonce and timestamp — went to the proxy host rather than the camera,
+  and the proxy's reply was accepted as the camera's. Demonstrated against an unroutable
+  camera address that nevertheless returned a device description. The session now sets
+  `trust_env = False`.
+- **ONVIF requests followed redirects.** A device answering with a 307 caused the whole
+  SOAP body, credential header included, to be re-sent to whatever host the reply named.
+  Requests now use `allow_redirects=False` and a 3xx is reported as an error.
+- **The motion recorder could hammer a camera and outlive its own stop.** A faulting
+  event service produced unbounded `CreatePullPointSubscription` calls — measured at over
+  thirty a second — with no backoff and no cap, and a subscription could be created after
+  `stop()` had returned and reported not-running. Both failure paths that re-subscribe
+  now check for a stop request first, back off exponentially, and give up after six
+  consecutive failures.
+
+### Fixed
+
+- Input files are now hashed **before** they are parsed. `SAFETY.md`, the report and the
+  evidence bundle's cover sheet all stated that the hash was taken before the file was
+  read; in fact the file was sniffed and parsed first and hashed afterwards. The claim is
+  the point of the sentence, so the code was changed to match rather than the sentence.
+- `packaging/build.py` could not detect a build whose graphical interface was dead.
+  Both of its checks ran only the console executable and neither touched Tkinter, so a
+  bundle missing the Tk libraries passed and shipped. A new `--check-runtime` option
+  imports each bundled subsystem without needing a display, and the build gate runs it.
+- The macOS release archive contained two complete copies of the application — the
+  collection directory and the `.app` built from it — roughly doubling the download. The
+  release workflow now packs the `.app` alone.
+- `build-system.requires` declared `setuptools>=68`, which cannot build this package:
+  the PEP 639 `license`/`license-files` metadata needs 77 or newer, and any build in the
+  declared-supported range failed outright. Corrected to `>=77`.
+- `pyproject.toml` declared a `py.typed` marker that does not exist in the tree, so the
+  wheel shipped no typing marker. The declaration was removed rather than the marker
+  added, since the package is annotated but not type-checked in CI.
+
+### Documentation
+
+- `SAFETY.md` claimed three greps enumerated every network-adjacent call. They did not:
+  they missed the ONVIF client entirely, because it is built on `requests` rather than on
+  sockets directly, and they missed `webbrowser.open` and `os.startfile`. A fourth grep
+  has been added, the table now lists every hit, and the omission is described rather
+  than quietly corrected. `SECURITY.md` no longer says "three".
+- `packaging/README.md` stated that no CI workflow was checked into the repository. Both
+  `test.yml` and `release.yml` were, and `release.yml` produced the shipped artefacts.
+- Removed `get_snapshot_uri` and `get_capabilities`, which had no callers anywhere;
+  `SAFETY.md` listed `GetSnapshotUri` as an operation the tool performs.
+- Corrected a stale line-number citation, the self-test count in the root README (which
+  said 82 where every other document said the true figure), and the bundled time-zone database size
+  in the packaging size table (0.5 MiB, not 2 MiB).
+
+### Added
+
+- `--check-runtime` reports which optional subsystems can be imported. Useful on its own
+  for diagnosing an installation, and it is what gates a standalone release.
+- A tenth self-test section asserting the read-only and chain-of-custody guarantees, so
+  each of the defects above fails the suite if it returns. 141 checks in total.
+
 ## [1.0.0] - 2026-08-03
 
 First release.
@@ -157,7 +226,7 @@ for the session only, and RTSP URLs are recorded in redacted form.
 
 **`--self-test`,** which generates synthetic fixtures for every parser in the registry,
 runs the entire pipeline over them twice — once with a planted correlation and once with
-camera events and disruptions drawn independently — and verifies 132 checks across nine
+camera events and disruptions drawn independently — and verifies 141 checks across nine
 sections. The negative scenario matters more than the positive one: a correlator that
 always finds a correlation is worthless as evidence, so random data producing a finding
 fails the test. Section 9 holds regression checks for every way the tool has been found to

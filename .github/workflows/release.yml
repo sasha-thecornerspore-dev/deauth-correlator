@@ -125,15 +125,36 @@ jobs:
           staging.mkdir(exist_ok=True)
           base = staging / f"deauth-correlator-{os.environ['VERSION']}-{os.environ['LABEL']}"
 
+          # On macOS the spec produces BOTH dist/deauth-correlator/ (the COLLECT
+          # output) and dist/deauth-correlator.app/ (the BUNDLE built from it).
+          # They are the same program, so packing all of dist/ wholesale shipped
+          # two complete copies - roughly twice the payload - and left anyone
+          # unpacking it looking at a bare folder and an .app with nothing to
+          # say they were the same thing. Pack the .app where there is one.
+          app = dist / "deauth-correlator.app"
+          if app.is_dir():
+              payload_root, payload_name = dist, app.name
+          else:
+              payload_root, payload_name = dist, "deauth-correlator"
+
+          pack = Path("payload")
+          if pack.exists():
+              shutil.rmtree(pack)
+          pack.mkdir()
+          shutil.copytree(payload_root / payload_name, pack / payload_name,
+                          symlinks=True)
+
           # zip on Windows because a Windows machine opens one without extra tooling.
           # tar.gz elsewhere because a zip written by Python does not restore the
           # executable bit on extraction, and a binary that will not run is not an
-          # artefact.
+          # artefact. tar.gz also preserves the symlinks inside a .app bundle,
+          # which a Python-written zip does not.
           archive = shutil.make_archive(
               str(base), "zip" if platform.system() == "Windows" else "gztar",
-              root_dir=dist)
+              root_dir=pack)
 
-          print("packed from dist/:", ", ".join(p.name for p in entries))
+          print(f"packed: {payload_name} (dist/ held: "
+                f"{', '.join(p.name for p in entries)})")
           print(f"archive: {archive} ({os.path.getsize(archive)} bytes)")
           PY
 
@@ -262,7 +283,7 @@ jobs:
           python -m deauth_correlator --self-test
           ```
 
-          The self-test runs 132 checks over synthetic evidence in every supported
+          The self-test runs 141 checks over synthetic evidence in every supported
           input format. Run it once on the machine that will do the analysis, and
           note the result: it is the simplest answer to a question about whether the
           software worked.

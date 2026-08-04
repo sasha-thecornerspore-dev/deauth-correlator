@@ -22,7 +22,7 @@ from .config import AppConfig
 from .correlate import run_analysis
 from .csvout import write_correlation_csv, write_events_csv, write_incidents_csv
 from .events import to_frame
-from .hashing import Provenance, record_file
+from .hashing import Provenance, record_file, sha256_file
 from .parsers import ParseContext, ParseError, describe_registry, parse_path
 from .report import write_manifest, write_report
 from .stats import DEFAULT_ALPHA, DEFAULT_TRIALS, DEFAULT_WINDOW_S
@@ -55,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list_parsers:
         return _list_parsers()
+    if args.check_runtime:
+        return _check_runtime()
     if args.self_test:
         from .selftest import run_self_test
         return run_self_test(keep=args.self_test_dir, verbose=not args.quiet)
@@ -186,6 +188,12 @@ def build_parser() -> argparse.ArgumentParser:
     other.add_argument("--self-test", action="store_true",
                        help="Generate synthetic fixtures, run the whole pipeline over "
                             "them and check the results.")
+    other.add_argument("--check-runtime", action="store_true",
+                       help="Report which optional subsystems can be imported (the "
+                            "graphical interface, the SciPy statistics backend, the "
+                            "camera support). Needs no display. In a standalone build "
+                            "this exits non-zero when something that ships in the "
+                            "bundle cannot be loaded.")
     other.add_argument("--self-test-dir", default=None, metavar="DIR",
                        help="Keep the self-test fixtures in this directory.")
     other.add_argument("--version", action="version",
@@ -246,6 +254,21 @@ def load_evidence(config: AppConfig, forced_parser: str | None = None,
                 log(f"  ! {path}: not found")
                 continue
 
+            # Hash before a single byte is parsed. SAFETY.md, the report and the
+            # evidence bundle's cover sheet all tell the reader the hash was
+            # taken before the file was read, and the point of that sentence is
+            # that the hash bounds exactly what was analysed. Sniffing the
+            # format and then parsing opens the file twice, so the digest has to
+            # be taken ahead of both.
+            digest = None
+            if path.is_file():
+                try:
+                    digest = sha256_file(path)
+                except OSError as exc:
+                    warnings.append(f"{path.name}: could not be read - {exc}")
+                    log(f"  ! {path.name}: could not be read - {exc}")
+                    continue
+
             ctx = ParseContext(
                 time=time_ctx,
                 year_hint=config.log_year,
@@ -270,7 +293,7 @@ def load_evidence(config: AppConfig, forced_parser: str | None = None,
                 record = _directory_record(path, role, parser.id, len(parsed))
             else:
                 record = record_file(path, role=role, parser=parser.id,
-                                     rows=len(parsed))
+                                     rows=len(parsed), sha256=digest)
             records.append(record)
             log(f"  + {path.name}: {len(parsed)} event(s) via {parser.name}")
 
@@ -476,6 +499,62 @@ def _camera_command(argv: list[str]) -> int:
     if recorder.status.last_error:
         print(f"Last error: {recorder.status.last_error}", file=sys.stderr)
         return 1
+    return 0
+
+
+def _check_runtime() -> int:
+    """Report which optional subsystems can actually be loaded.
+
+    A standalone build can pass ``--version`` and the whole self-test while its
+    graphical interface is dead, because neither touches Tkinter. PyInstaller
+    failing to collect the Tk libraries is a common and completely silent
+    packaging failure, and the frozen GUI executable cannot be used to detect it
+    without a display. This performs the imports directly, needs no display, and
+    is what packaging/build.py runs to gate a release.
+    """
+    frozen = bool(getattr(sys, "frozen", False))
+
+    subsystems = [
+        ("graphical interface", "tkinter",
+         "the --gui option and the packaged GUI executable"),
+        ("SciPy statistics backend", "scipy",
+         "optional; without it the exact pure-Python tests are used instead"),
+        ("camera ONVIF support", "requests",
+         "the camera probe and the motion recorder"),
+        ("camera snapshots", "cv2",
+         "grabbing a still frame over RTSP"),
+        ("timezone database", "tzdata",
+         "on Windows, where the system has none"),
+    ]
+    # In a frozen build these were bundled deliberately, so a failure to import
+    # one means the build is broken rather than that the user chose not to
+    # install it. Outside a frozen build they are genuinely optional.
+    required_when_frozen = {"tkinter"}
+
+    print(f"{BANNER}\n")
+    print(f"Running {'from a standalone build' if frozen else 'from a Python install'}"
+          f" on {sys.platform}, Python {sys.version.split()[0]}\n")
+
+    broken = []
+    for label, module, purpose in subsystems:
+        try:
+            __import__(module)
+            status = "available"
+        except Exception as exc:
+            status = f"UNAVAILABLE ({exc.__class__.__name__})"
+            if frozen and module in required_when_frozen:
+                broken.append((label, module, exc))
+        print(f"  {label:26s} {status}")
+        print(f"  {'':26s} {purpose}")
+
+    if broken:
+        print("\nThis build is incomplete. The following ship inside the bundle and "
+              "should always import:")
+        for label, module, exc in broken:
+            print(f"  - {label} ({module}): {exc}")
+        return 1
+
+    print("\nEverything expected in this build loaded.")
     return 0
 
 

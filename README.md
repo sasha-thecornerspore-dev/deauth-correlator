@@ -78,7 +78,7 @@ python -m deauth_correlator --self-test
 
 That generates synthetic evidence for every supported format, runs the whole pipeline
 over it twice — once with a planted correlation, once with independent random data —
-and checks that the first is found and the second is not. All 82 checks should pass.
+and checks that the first is found and the second is not. All 141 checks should pass.
 
 ---
 

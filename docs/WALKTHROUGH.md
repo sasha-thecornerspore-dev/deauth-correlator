@@ -85,11 +85,11 @@ clip files — and runs the entire pipeline over it twice. The run ends like thi
 
 ```
 ============================================================
-SELF-TEST PASSED: all 132 checks passed.
+SELF-TEST PASSED: all 141 checks passed.
 ```
 
 It exits 0 when everything passes and 1 when anything fails, so it can go in a script.
-The 132 checks are grouped into nine sections, and it is worth knowing what each one is
+The 141 checks are grouped into nine sections, and it is worth knowing what each one is
 defending:
 
 | Section | What it proves |
@@ -134,7 +134,7 @@ deauth-correlator 1.0.0 - self-test
 
 Fixtures: /home/you/fixtures
 ...
-SELF-TEST PASSED: all 132 checks passed.
+SELF-TEST PASSED: all 141 checks passed.
 Fixtures kept in /home/you/fixtures
 ```
 

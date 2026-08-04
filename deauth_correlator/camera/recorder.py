@@ -26,6 +26,13 @@ from .tapo import CameraConfig, snapshot
 
 CSV_HEADER = ["timestamp", "plate", "make", "model", "notes"]
 
+#: How long to wait before the first re-subscription retry, and the ceiling the
+#: doubling backoff is capped at.
+RESUBSCRIBE_BACKOFF_S = 2.0
+MAX_RESUBSCRIBE_BACKOFF_S = 60.0
+#: Consecutive failures after which the recorder stops instead of retrying.
+MAX_RESUBSCRIBE_ATTEMPTS = 6
+
 
 @dataclass
 class RecorderStatus:
@@ -113,6 +120,12 @@ class MotionRecorder:
                                                     timeout="PT20S", limit=50)
             except OnvifError as exc:
                 self.status.last_error = str(exc)
+                # Check for a stop request before doing anything else. Without
+                # this, a camera whose event service is faulting keeps the
+                # thread re-subscribing, and a subscription can be created
+                # after stop() has already returned and reported not-running.
+                if self._stop.is_set():
+                    break
                 self._message(f"Pull failed ({exc}); re-subscribing.")
                 if not self._resubscribe():
                     break
@@ -130,25 +143,55 @@ class MotionRecorder:
                 renew_countdown = 0
                 try:
                     self._client.renew(self._subscription, "PT120S")
-                except OnvifError:
-                    self._resubscribe()
+                except OnvifError as exc:
+                    # Same rule as the pull failure above: never start a new
+                    # subscription once a stop has been asked for, and stop the
+                    # loop if the rebuild gives up.
+                    if self._stop.is_set():
+                        break
+                    self.status.last_error = str(exc)
+                    if not self._resubscribe():
+                        break
 
         self._teardown()
 
     def _resubscribe(self) -> bool:
+        """Rebuild the event subscription, backing off and eventually giving up.
+
+        A camera whose event service is failing would otherwise be hit with
+        subscription requests as fast as the loop can issue them - measured at
+        over thirty a second against a faulting camera. That is indistinguishable
+        from an attack on the operator's own device, so each attempt waits
+        longer than the last and the recorder stops after
+        ``MAX_RESUBSCRIBE_ATTEMPTS`` consecutive failures rather than retrying
+        for ever.
+        """
         self._teardown()
-        try:
-            self._client = OnvifClient(self.config.host, self.config.onvif_port,
-                                       self.config.username, self.config.password,
-                                       timeout=30.0)
-            self._subscription = self._client.create_pull_point("PT120S")
-            return True
-        except OnvifError as exc:
-            self.status.last_error = str(exc)
-            self.status.running = False
-            self._message(f"Re-subscription failed: {exc}")
-            self._notify_status()
-            return False
+
+        delay = RESUBSCRIBE_BACKOFF_S
+        for attempt in range(1, MAX_RESUBSCRIBE_ATTEMPTS + 1):
+            if self._stop.wait(0 if attempt == 1 else delay):
+                return False  # stop requested while backing off
+            try:
+                self._client = OnvifClient(self.config.host, self.config.onvif_port,
+                                           self.config.username, self.config.password,
+                                           timeout=30.0)
+                self._subscription = self._client.create_pull_point("PT120S")
+                if attempt > 1:
+                    self._message(f"Re-subscribed after {attempt} attempts.")
+                return True
+            except OnvifError as exc:
+                self.status.last_error = str(exc)
+                self._message(f"Re-subscription attempt {attempt} of "
+                              f"{MAX_RESUBSCRIBE_ATTEMPTS} failed: {exc}")
+                delay = min(delay * 2, MAX_RESUBSCRIBE_BACKOFF_S)
+
+        self.status.running = False
+        self._message(f"Giving up after {MAX_RESUBSCRIBE_ATTEMPTS} failed "
+                      f"re-subscriptions. The camera's event service is not "
+                      f"responding; recording has stopped.")
+        self._notify_status()
+        return False
 
     def _teardown(self) -> None:
         if self._client and self._subscription:

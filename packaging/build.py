@@ -238,6 +238,24 @@ def verify_cli(cli: Path, expected_version: str) -> None:
                 f"bundle.")
         say(f"    {summary}")
 
+        # Neither check above touches Tkinter, so a bundle whose GUI is dead -
+        # the classic PyInstaller Tk-collection failure - passes both of them
+        # and ships. The frozen GUI executable cannot be used to detect that
+        # without a display, so the CLI performs the imports instead.
+        say(f"  {cli.name} --check-runtime")
+        result = run([str(cli), "--check-runtime"], cwd=cwd,
+                     timeout=VERSION_TIMEOUT_S)
+        if result.returncode != 0:
+            show_output(result, tail=40)
+            raise BuildError(
+                f"'{cli.name} --check-runtime' exited {result.returncode}. Something "
+                f"that ships inside the bundle cannot be imported - most often the Tk "
+                f"libraries, which leaves {cli.name} working and the graphical "
+                f"interface dead.")
+        for line in (result.stdout or "").splitlines():
+            if "available" in line or "UNAVAILABLE" in line:
+                say(f"    {line.strip()}")
+
 
 def verify_app_bundle(app: Path) -> None:
     """Check the .app is structurally what Finder and codesign expect."""

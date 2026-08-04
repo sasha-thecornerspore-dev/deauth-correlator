@@ -113,6 +113,14 @@ class OnvifClient:
         self.password = password
         self.timeout = timeout
         self.session = requests.Session()
+        # A stock Session honours HTTP_PROXY/HTTPS_PROXY from the environment.
+        # On a machine with a proxy configured that would send every ONVIF
+        # request - including the WS-Security header carrying the camera
+        # username and the password digest - to the proxy host instead of the
+        # camera, and accept the proxy's answer as the camera's. SAFETY.md
+        # states that no destination other than the camera is ever contacted,
+        # and this is what makes that true.
+        self.session.trust_env = False
         self._clock_offset: float | None = None
 
     # -- endpoints -------------------------------------------------------
@@ -138,9 +146,20 @@ class OnvifClient:
             response = self.session.post(
                 url, data=payload.encode("utf-8"),
                 headers={"Content-Type": 'application/soap+xml; charset=utf-8'},
-                timeout=self.timeout)
+                timeout=self.timeout,
+                # An ONVIF device service has no legitimate reason to redirect.
+                # Following one would re-send the whole SOAP body, WS-Security
+                # header included, to whatever host the reply names.
+                allow_redirects=False)
         except requests.RequestException as exc:
             raise OnvifError(_connection_message(self.host, self.port, exc)) from exc
+
+        if 300 <= response.status_code < 400:
+            raise OnvifError(
+                f"the camera replied with a redirect (HTTP {response.status_code}) to "
+                f"{response.headers.get('Location', 'an unnamed address')}. A camera "
+                f"does not redirect its ONVIF service; the address may belong to "
+                f"something else on the network.")
 
         if response.status_code == 401:
             raise OnvifError(
@@ -222,18 +241,6 @@ class OnvifClient:
             hardware=root.findtext(".//tds:HardwareId", "", NS),
         )
 
-    def get_capabilities(self) -> dict:
-        root = self.call(self.device_url,
-                         "<tds:GetCapabilities><tds:Category>All</tds:Category>"
-                         "</tds:GetCapabilities>")
-        found: dict[str, str] = {}
-        for element in root.iter():
-            tag = element.tag.rsplit("}", 1)[-1]
-            if tag == "XAddr" and element.text:
-                parent = _parent_tag(root, element)
-                found[parent or tag] = element.text
-        return found
-
     def get_profiles(self) -> list[dict]:
         root = self.call(self.media_url, "<trt:GetProfiles/>")
         profiles = []
@@ -260,18 +267,6 @@ class OnvifClient:
             "</trt:GetStreamUri>")
         root = self.call(self.media_url, body)
         return root.findtext(".//tt:Uri", "", NS)
-
-    def get_snapshot_uri(self, profile_token: str) -> str:
-        body = ("<trt:GetSnapshotUri>"
-                f"<trt:ProfileToken>{_xml_escape(profile_token)}</trt:ProfileToken>"
-                "</trt:GetSnapshotUri>")
-        try:
-            root = self.call(self.media_url, body)
-        except OnvifError:
-            return ""
-        return root.findtext(".//tt:Uri", "", NS)
-
-    # -- events ----------------------------------------------------------
 
     def create_pull_point(self, initial_timeout: str = "PT60S") -> str:
         """Start an event subscription and return its address.
