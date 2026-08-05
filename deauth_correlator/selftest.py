@@ -31,7 +31,6 @@ from zoneinfo import ZoneInfo
 
 from . import __version__, __tool_name__
 from .config import AppConfig
-from .camera.recorder import MotionRecorder
 from .correlate import run_analysis
 from .events import BROADCAST, norm_mac
 from .parsers.dot11 import DLT_IEEE802_11_RADIOTAP, build_deauth_frame
@@ -783,29 +782,15 @@ def _test_no_fabrication(check: Check) -> None:
                f"got {list(matches['plate'])}")
 
 
-def _test_guarantees(check: Check, directory: Path) -> None:
-    """Regressions for the promises SAFETY.md makes to an auditing reader.
+def _test_camera_guarantees(check: Check, directory: Path, recorder_module,
+                            OnvifClient, OnvifError, MotionRecorder,
+                            CameraConfig) -> None:
+    """The camera half of the guarantees.
 
-    Each of these was found by an independent review of the published 1.0.0, and
-    each was a case where the documentation described behaviour the code did not
-    have. A claim in a document that invites verification has to stay true.
-
-    Everything here tests behaviour rather than source text. An earlier version
-    read the source with ``inspect.getsource``, which works from a checkout and
-    raises ``OSError`` inside a frozen build - so the checks that mattered most
-    were exactly the ones that could not run in the artefact people download.
+    Split out and called conditionally because it needs ``requests``, which is
+    an optional dependency. Importing it at module scope made ``--self-test``
+    fail outright on a base install that had never asked for camera support.
     """
-    import struct as _struct
-
-    from . import cli as cli_module
-    from .camera import recorder as recorder_module
-    from .camera.onvif_min import OnvifClient, OnvifError
-    from .camera.tapo import CameraConfig
-    from .parsers.dot11 import decode_packet
-
-    directory.mkdir(parents=True, exist_ok=True)
-
-    # -- the ONVIF client must talk to the camera and to nothing else --------
     client = OnvifClient("192.0.2.1", username="u", password="p")
     check.that(client.session.trust_env is False,
                "the ONVIF session ignores proxy environment variables, so the "
@@ -871,6 +856,49 @@ def _test_guarantees(check: Check, directory: Path) -> None:
                and 0 < recorder_module.RESUBSCRIBE_BACKOFF_S
                <= recorder_module.MAX_RESUBSCRIBE_BACKOFF_S,
                "re-subscription gives up after a bounded number of attempts")
+
+
+
+def _test_guarantees(check: Check, directory: Path) -> None:
+    """Regressions for the promises SAFETY.md makes to an auditing reader.
+
+    Each of these was found by an independent review of the published 1.0.0, and
+    each was a case where the documentation described behaviour the code did not
+    have. A claim in a document that invites verification has to stay true.
+
+    Everything here tests behaviour rather than source text. An earlier version
+    read the source with ``inspect.getsource``, which works from a checkout and
+    raises ``OSError`` inside a frozen build - so the checks that mattered most
+    were exactly the ones that could not run in the artefact people download.
+
+    The camera checks need ``requests``, which is an optional dependency. They
+    are skipped rather than failed when it is absent, because the base install
+    genuinely does not have it and the README says so. Importing it at module
+    scope broke ``--self-test`` outright for anyone who installed without the
+    camera extra.
+    """
+    import struct as _struct
+
+    from . import cli as cli_module
+    from .parsers.dot11 import decode_packet
+
+    directory.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from .camera import recorder as recorder_module
+        from .camera.onvif_min import OnvifClient, OnvifError
+        from .camera.recorder import MotionRecorder
+        from .camera.tapo import CameraConfig
+        camera_available = True
+    except ImportError as exc:
+        camera_available = False
+        check.that(True, f"camera checks skipped - the optional camera support is "
+                         f"not installed ({exc.name})")
+
+    # -- the ONVIF client must talk to the camera and to nothing else --------
+    if camera_available:
+        _test_camera_guarantees(check, directory, recorder_module, OnvifClient,
+                                OnvifError, MotionRecorder, CameraConfig)
 
     # -- an input file is hashed before anything reads it -------------------
     order: list = []

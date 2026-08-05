@@ -80,6 +80,10 @@ That generates synthetic evidence for every supported format, runs the whole pip
 over it twice — once with a planted correlation, once with independent random data —
 and checks that the first is found and the second is not. All 141 checks should pass.
 
+A base install without the optional extras runs 137 and reports the camera checks as
+skipped, because those need `requests`. Either count is a pass; a failure names the
+check that failed.
+
 ---
 
 ## Quick start

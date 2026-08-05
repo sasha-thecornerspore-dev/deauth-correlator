@@ -127,7 +127,7 @@ python -m deauth_correlator --self-test --self-test-dir ./fixtures
 `-q` suppresses the per-check `PASS` lines and prints only the section headers and the
 result. Failures are always printed, and are listed again at the end.
 
-The nine sections, and what each one exists to catch:
+The ten sections, and what each one exists to catch:
 
 | Section | Title | Catches |
 | --- | --- | --- |
@@ -140,6 +140,7 @@ The nine sections, and what each one exists to catch:
 | 7 | The two statistics backends agree | scipy and the pure-Python fallback give the same numbers |
 | 8 | Degenerate inputs are handled honestly | no camera events, no disruptions, non-overlapping periods, empty input |
 | 9 | Routine network traffic is not mistaken for evidence | the anti-fabrication regressions |
+| 10 | The read-only and chain-of-custody guarantees hold | the promises SAFETY.md makes: no proxy or redirect can receive the camera credential header, the recorder stops when told to, files are hashed before they are parsed, and a build with a dead GUI is detectable |
 
 A section that raises is recorded as one failed check and the remaining sections still
 run. That is deliberate: when something is broken you want the whole picture, not the

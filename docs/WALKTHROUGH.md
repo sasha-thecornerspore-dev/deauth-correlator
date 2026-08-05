@@ -89,7 +89,10 @@ SELF-TEST PASSED: all 141 checks passed.
 ```
 
 It exits 0 when everything passes and 1 when anything fails, so it can go in a script.
-The 141 checks are grouped into nine sections, and it is worth knowing what each one is
+A base install without the optional extras reports 137 instead, skipping the camera
+checks, which need `requests`. Both are passes.
+
+The 141 checks are grouped into ten sections, and it is worth knowing what each one is
 defending:
 
 | Section | What it proves |
