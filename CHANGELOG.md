@@ -7,6 +7,34 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Because
 output of this tool is used as evidence, any change to how a verdict is reached will be
 listed explicitly, with the direction of its effect stated.
 
+## [1.0.2] - 2026-08-05
+
+A packaging fix. Nothing here changes how a verdict is reached, and no analysis result
+differs from 1.0.1.
+
+### Fixed
+
+- **`--self-test` could not run on a base install.** The guarantees section added in
+  1.0.1 imported `MotionRecorder` at module scope, which pulls in
+  `deauth_correlator.camera` and therefore `requests`. On an install without the optional
+  extras — the install the README describes as not needing `requests` — the self-test
+  failed at import before running a single check, so the tool's whole verification story
+  was unavailable to exactly the users least likely to have a workaround. The standalone
+  builds bundle `requests` and were unaffected; the wheel and sdist were not.
+
+  The camera checks now live in their own function, called only when the import succeeds,
+  and their absence is reported as a skip rather than passed over silently. A base install
+  runs 137 checks and names what was skipped; a full install runs 141.
+
+  This was found by CI and could not have been found locally: every environment on the
+  development machine had `requests` installed.
+
+### Changed
+
+- CI now tests Python 3.10, the floor `requires-python` has always declared and the one
+  version never previously exercised. It passes on Linux, macOS and Windows.
+- `CONTRIBUTING.md` described nine self-test sections and omitted the tenth.
+
 ## [1.0.1] - 2026-08-03
 
 An independent review of the published 1.0.0 found thirteen defects. None changes how a
