@@ -190,13 +190,20 @@ def analyze(camera_times: np.ndarray, incident_times: np.ndarray,
     rate_in = inside / (exposed_s / 60.0) if exposed_s > 0 else 0.0
     rate_out = outside / (unexposed_s / 60.0) if unexposed_s > 0 else 0.0
     corrected = False
-    if rate_out == 0:
-        # Haldane-Anscombe: with zero background events the ratio is undefined,
-        # so half an event is added to each cell and the report says so.
+    if inside == 0 and outside == 0:
+        # Nothing happened anywhere, so there is no ratio to report. Applying
+        # the zero-cell correction here would divide one duration by another
+        # and print a large multiple next to a table of zeroes - a false
+        # statement about data containing no disruptions at all.
+        ratio = float("nan")
+    elif rate_out == 0:
+        # Haldane-Anscombe: a real count on one side and none on the other
+        # leaves the plain ratio undefined, so half an event is added to each
+        # cell and the report says so.
         corrected = True
         rate_in_c = (inside + 0.5) / (exposed_s / 60.0) if exposed_s > 0 else 0.0
         rate_out_c = (outside + 0.5) / (unexposed_s / 60.0) if unexposed_s > 0 else 0.0
-        ratio = rate_in_c / rate_out_c if rate_out_c else 0.0
+        ratio = rate_in_c / rate_out_c if rate_out_c else float("nan")
     else:
         ratio = rate_in / rate_out
 
@@ -270,10 +277,15 @@ def decide(stats: WindowStats, alpha: float = DEFAULT_ALPHA,
             f"the threshold of {alpha:g}. Every test has to clear it, not just the "
             f"most favourable one")
     if not passes_ratio:
-        reasons.append(
-            f"disruptions were only {stats.rate_ratio:.2f}x more frequent during camera "
-            f"windows than outside them (at least {MIN_RATE_RATIO_FOR_VERDICT:g}x is "
-            f"required)")
+        if stats.rate_ratio != stats.rate_ratio:
+            reasons.append(
+                "there were no disruptions in either period, so no rate ratio "
+                "could be computed")
+        else:
+            reasons.append(
+                f"disruptions were only {stats.rate_ratio:.2f}x more frequent during "
+                f"camera windows than outside them (at least "
+                f"{MIN_RATE_RATIO_FOR_VERDICT:g}x is required)")
     if stats.tests_straddle(alpha):
         reasons.append(
             f"the tests disagree about the answer - p ranges from {stats.best_p:.3g} "

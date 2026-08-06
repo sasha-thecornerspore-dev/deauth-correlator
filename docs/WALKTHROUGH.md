@@ -85,14 +85,14 @@ clip files — and runs the entire pipeline over it twice. The run ends like thi
 
 ```
 ============================================================
-SELF-TEST PASSED: all 141 checks passed.
+SELF-TEST PASSED: all 146 checks passed.
 ```
 
 It exits 0 when everything passes and 1 when anything fails, so it can go in a script.
-A base install without the optional extras reports 137 instead, skipping the camera
+A base install without the optional extras reports 142 instead, skipping the camera
 checks, which need `requests`. Both are passes.
 
-The 141 checks are grouped into ten sections, and it is worth knowing what each one is
+The 146 checks are grouped into ten sections, and it is worth knowing what each one is
 defending:
 
 | Section | What it proves |
@@ -106,6 +106,7 @@ defending:
 | 7. Statistics backends | scipy and the pure-Python fallback agree on Fisher, chi-square and the binomial across 41 tables |
 | 8. Degenerate inputs | No camera events, no disruptions, one camera event, an empty event set, non-overlapping evidence periods, an hour of clock skew, a missing file, an unrecognised file and a header-only CSV each produce an honest answer instead of a crash or a silent result |
 | 9. No fabrication | DHCP retransmission backoff, routine lease renewals, repeated DHCPINFORM from a static host and an already-logged disconnection are not counted as client drops; a protected (802.11w) frame yields no reason code rather than ciphertext read as one; a p-value is never printed as exactly zero |
+| 10. Read-only and chain-of-custody guarantees | The promises `SAFETY.md` makes hold: the ONVIF session ignores proxy environment variables and refuses redirects, so the camera credential header cannot reach a third party; the motion recorder creates no subscription once stopped and gives up rather than retrying for ever; an input file is hashed before it is parsed; and a build whose graphical interface is dead is detectable |
 
 Section 5 matters more than section 4. A correlator that always finds a correlation is
 worthless as evidence, and the value of the whole exercise rests on the tool being
@@ -133,15 +134,15 @@ python -m deauth_correlator --self-test --self-test-dir ./fixtures
 The header now tells you where they went, and the last line confirms they stayed:
 
 ```
-deauth-correlator 1.0.0 - self-test
+deauth-correlator <version> - self-test
 
 Fixtures: /home/you/fixtures
 ...
-SELF-TEST PASSED: all 141 checks passed.
+SELF-TEST PASSED: all 146 checks passed.
 Fixtures kept in /home/you/fixtures
 ```
 
-Four directories are left behind:
+Five directories are left behind:
 
 | Directory | Contents |
 | --- | --- |
@@ -181,7 +182,7 @@ python -m deauth_correlator \
 ```
 
 ```
-deauth-correlator 1.0.0 - read-only wireless disruption correlator
+deauth-correlator <version> - read-only wireless disruption correlator
 
 Reading evidence:
   + dnsmasq.log: 192 event(s) via OPNsense DHCP / system log
@@ -728,7 +729,7 @@ python -m deauth_correlator \
 
 ```
 Building evidence bundle in case0714/evidence_2026-CF-00417 ...
-  . Bundle started by deauth-correlator 1.0.0
+  . Bundle started by deauth-correlator <version>
   . Case 2026-CF-00417; operator J. Schatz
   . Writing report.md
   . Writing correlation.csv
@@ -742,7 +743,7 @@ Building evidence bundle in case0714/evidence_2026-CF-00417 ...
   . Archive sha256 45fa6590ada2c6fdf679556552af1ed3152b04560c0f79033bd86dd28bf1649a
   . Bundle complete
 Evidence bundle: case0714/evidence_2026-CF-00417
-13 file(s) written.
+12 file(s) written.
 Archive: case0714/evidence_2026-CF-00417.zip
 Archive SHA-256: 45fa6590ada2c6fdf679556552af1ed3152b04560c0f79033bd86dd28bf1649a
 ```

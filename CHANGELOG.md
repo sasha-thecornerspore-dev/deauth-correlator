@@ -24,16 +24,65 @@ differs from 1.0.1.
 
   The camera checks now live in their own function, called only when the import succeeds,
   and their absence is reported as a skip rather than passed over silently. A base install
-  runs 137 checks and names what was skipped; a full install runs 141.
+  runs 142 checks and names what was skipped; a full install runs 146.
 
   This was found by CI and could not have been found locally: every environment on the
   development machine had `requests` installed.
+
+- **`MANIFEST.json` was not valid JSON.** `json.dumps` writes bare `NaN` and `Infinity`
+  tokens, which Python reads back but no other parser accepts. Both occur in ordinary use:
+  Fisher's odds ratio is infinite whenever every camera window contains a disruption —
+  the shape of a strong positive finding — and the permutation statistics are NaN when
+  there are no disruptions at all. So the file the bundle's cover sheet calls
+  machine-readable, and tells the recipient to open, was rejected by every parser except
+  the one that wrote it. Non-finite values now serialise as `null`, the replaced fields
+  are named in a `_non_finite_fields` key, and `allow_nan=False` turns any future escape
+  into a failed build rather than an unparseable evidence file.
+- **A rate ratio was asserted when there were no disruptions at all.** The zero-cell
+  correction was applied even when both cells were zero, so the report printed
+  "wireless disruptions were 17.13 times more frequent during the camera windows"
+  directly beneath a table showing zero incidents in both periods. With nothing in either
+  period there is no ratio, and the report, the console and the interface now say so.
+- **Rebuilding a bundle into the same directory accumulated the previous one.** A second
+  run left both sets of hash-verified source copies side by side under `_2` names and
+  appended its chain-of-custody log to the old one, producing a handover folder holding
+  evidence from a superseded analysis. A rebuild now replaces the previous bundle, and
+  refuses — without deleting anything — if the directory holds files this tool did not
+  write.
+- The bundle cover sheet's inventory omitted `00_MANIFEST.txt`, which every bundle
+  contains.
 
 ### Changed
 
 - CI now tests Python 3.10, the floor `requires-python` has always declared and the one
   version never previously exercised. It passes on Linux, macOS and Windows.
-- `CONTRIBUTING.md` described nine self-test sections and omitted the tenth.
+- A second independent review checked every factual claim in the documentation against
+  the code and walked the whole user journey. It found no blockers. Its confirmed
+  findings are the corrections above and the documentation fixes below.
+
+### Documentation
+
+- The README's flagship example showed a verdict line the tool cannot produce — a single
+  `p = 1.47e-12` rather than the `every test p <= …` form — which is precisely the
+  most-favourable-p presentation 1.0.1 removed and `VALIDATION.md` explains at length.
+- `SAFETY.md` said its four greps returned "the following, and nothing else" while the
+  fourth returned around forty lines, most of them XML namespace URLs and fixture
+  strings. The grep is now narrow enough to match only call sites, and the count is
+  stated: sixteen lines describing seven distinct things.
+- The `[1.0.0]` changelog entry had been rewritten to a later check count. A shipped
+  release's record should not be edited; restored to 132.
+- `CONTRIBUTING.md` cited three greps and four hits, told contributors to `cd CamLink`
+  (the repository is `deauth-correlator`), and described nine self-test sections.
+- The walkthrough's section table omitted the tenth section, said four fixture
+  directories where there are five, and reported a bundle file count of 13 where it is 12.
+- Version literals in expected-output blocks are now `<version>` rather than a number
+  that goes stale every release.
+- The README described adding a parser as one registry line; `ROLE_PARSERS` is a second,
+  separate entry, without which a new parser is never reached by detection.
+- `--no-plot` and `--check-runtime` were missing from the README command reference, and
+  `--check-runtime` from the packaging guide's hand-verification list even though the
+  release gate runs it.
+- `SECURITY.md` still counted six camera read operations; 1.0.1 removed one.
 
 ## [1.0.1] - 2026-08-03
 
@@ -102,7 +151,7 @@ verify its claims, and a claim that does not survive checking is worse than no c
 - `--check-runtime` reports which optional subsystems can be imported. Useful on its own
   for diagnosing an installation, and it is what gates a standalone release.
 - A tenth self-test section asserting the read-only and chain-of-custody guarantees, so
-  each of the defects above fails the suite if it returns. 141 checks in total.
+  each of the defects above fails the suite if it returns. 146 checks in total.
 
 ## [1.0.0] - 2026-08-03
 
@@ -254,7 +303,7 @@ for the session only, and RTSP URLs are recorded in redacted form.
 
 **`--self-test`,** which generates synthetic fixtures for every parser in the registry,
 runs the entire pipeline over them twice — once with a planted correlation and once with
-camera events and disruptions drawn independently — and verifies 141 checks across nine
+camera events and disruptions drawn independently — and verifies 132 checks across nine
 sections. The negative scenario matters more than the positive one: a correlator that
 always finds a correlation is worthless as evidence, so random data producing a finding
 fails the test. Section 9 holds regression checks for every way the tool has been found to

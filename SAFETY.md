@@ -21,7 +21,7 @@ To confirm this yourself:
 grep -rnE "AF_PACKET|SOCK_RAW|scapy|aireplay|mdk[34]|sendp\(|\.inject" deauth_correlator/
 grep -rn "socket" deauth_correlator/
 grep -rnE "subprocess|os\.system|popen|os\.exec" deauth_correlator/
-grep -rnE "webbrowser|startfile|requests\.|urllib|http" deauth_correlator/
+grep -rnE "webbrowser\.|os\.startfile|requests\.(Session|get|post|put|RequestException|exceptions)|urllib\.request" deauth_correlator/
 ```
 
 Note the fourth grep. The first three do **not** catch the ONVIF client, which is where
@@ -31,8 +31,15 @@ sockets directly, so `grep socket` misses it entirely. Nor do they catch
 first three and claimed they enumerated everything, which was wrong. If you are auditing
 this, run all four.
 
-Together they return the following, and nothing else. Each is listed so a hit does not
-have to be chased down:
+Together they return sixteen lines and nothing else: 1, 4, 3 and 8 respectively. Those
+sixteen describe the seven distinct things in the table below — several appear twice,
+as an `import` line and again at the call site. Each is listed so a hit does not have to
+be chased down.
+
+The fourth grep is deliberately narrow, matching call sites rather than the bare words.
+A looser pattern such as `"webbrowser|startfile|requests\.|urllib|http"` also matches the
+XML namespace URLs at the top of `onvif_min.py`, the RTSP URL template in `tapo.py` and
+the self-test's fixture strings — around forty lines, none of which touch the network.
 
 | Hit | Location | What it is |
 | --- | --- | --- |

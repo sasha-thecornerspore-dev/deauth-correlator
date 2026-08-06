@@ -202,14 +202,21 @@ by definition.
 
 ### Verifying by hand
 
-The build script already does the first two of these; they are worth knowing
+The build script already does the first three of these; they are worth knowing
 because they are also how you check an application someone hands you.
 
 ```bash
-./deauth-correlator --version         # deauth-correlator 1.0.0
-./deauth-correlator --self-test       # SELF-TEST PASSED: all 141 checks passed.
+./deauth-correlator --version         # deauth-correlator <version>
+./deauth-correlator --self-test       # SELF-TEST PASSED: all 146 checks passed.
+./deauth-correlator --check-runtime   # every bundled subsystem must load
 ./deauth-correlator --list-parsers
 ```
+
+`--check-runtime` is the one that catches a dead graphical interface. Neither
+`--version` nor `--self-test` touches Tkinter, so a bundle missing the Tk
+libraries passes both and ships with a GUI that will not open. It needs no
+display, and in a standalone build it exits non-zero when something that ships
+inside the bundle cannot be imported.
 
 The self-test is the real check. It generates synthetic evidence for every
 supported input format, runs the whole pipeline over it twice — once with a

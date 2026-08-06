@@ -32,6 +32,7 @@ LAYOUT = {
     "inputs": "06_source_files",
     "exhibits": "07_exhibits",
     "manifest": "00_MANIFEST.json",
+    "manifest_text": "00_MANIFEST.txt",
     "custody": "chain_of_custody.log",
     "readme": "00_READ_ME_FIRST.txt",
 }
@@ -63,8 +64,16 @@ def build_bundle(analysis, root: str | Path, copy_inputs: bool = True,
                  progress=None) -> BundleResult:
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
+
+    # A bundle is a snapshot of one analysis, so a rebuild has to start from
+    # nothing. Left alone, a second run into the same directory kept the first
+    # run's copies alongside the new ones under _2 names and appended its
+    # custody log to the old one - a handover folder holding evidence from a
+    # superseded analysis, with no way to tell which copy belonged to which.
+    problems = _clear_previous_bundle(root)
     custody = CustodyLog(root / LAYOUT["custody"])
     result = BundleResult(root=root, custody=custody)
+    result.problems.extend(problems)
 
     def step(message: str) -> None:
         custody.add("bundle", message)
@@ -159,6 +168,43 @@ def build_bundle(analysis, root: str | Path, copy_inputs: bool = True,
     return result
 
 
+def _clear_previous_bundle(root: Path) -> list[str]:
+    """Remove a previous bundle from ``root`` so a rebuild starts clean.
+
+    Only the files and directories this module creates are removed, and only
+    when the directory actually looks like one of our bundles. A directory
+    holding anything else is left completely alone and reported instead - the
+    operator may have pointed at the wrong path, and deleting their files
+    because of a typo would be far worse than refusing.
+    """
+    known = {LAYOUT[key] for key in LAYOUT}
+    existing = [p for p in root.iterdir()] if root.is_dir() else []
+    if not existing:
+        return []
+
+    ours = {p.name for p in existing} & known
+    if not ours:
+        return [f"the bundle directory {root} already contains files this tool did not "
+                f"write, so nothing was removed. Point --evidence-bundle at an empty "
+                f"directory, or move the existing contents aside."]
+
+    foreign = [p.name for p in existing if p.name not in known]
+    for path in existing:
+        if path.name not in known:
+            continue
+        try:
+            shutil.rmtree(path) if path.is_dir() else path.unlink()
+        except OSError as exc:
+            return [f"could not remove the previous bundle at {root}: {exc}"]
+
+    notes = [f"a previous bundle in {root} was replaced; its files were removed so the "
+             f"copies and the chain-of-custody log describe this run only."]
+    if foreign:
+        notes.append(f"left in place because this tool did not write them: "
+                     f"{', '.join(sorted(foreign))}")
+    return notes
+
+
 def _collect_records(root: Path, exclude: set | None = None) -> list[FileRecord]:
     exclude = exclude or set()
     records = []
@@ -214,6 +260,7 @@ def _read_me(analysis, result: BundleResult) -> str:
         "-" * 66,
         f"{LAYOUT['readme']:<28} this file",
         f"{LAYOUT['manifest']:<28} SHA-256 hashes and full parameters, machine-readable",
+        f"{LAYOUT['manifest_text']:<28} the same hashes as plain text, for reading without tools",
         f"{LAYOUT['report']:<28} the written findings - start here",
         f"{LAYOUT['correlation']:<28} one row per camera event",
         f"{LAYOUT['timeline']:<28} the timeline figure",

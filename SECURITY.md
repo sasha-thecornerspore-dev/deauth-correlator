@@ -125,7 +125,7 @@ That has already happened once. An earlier revision listed only three greps and 
 they were exhaustive; they missed the ONVIF client entirely, because it is built on
 `requests` rather than on sockets directly. The fourth grep exists because of that.
 
-`SAFETY.md` also documents what the camera integration does on the device: six read
+`SAFETY.md` also documents what the camera integration does on the device: five read
 operations, one standard ONVIF pull-point subscription that the camera expires on its own
 and the recorder removes when it stops, and nothing else. No camera setting is read for
 modification, changed or deleted. A code path that configures, changes or deletes anything

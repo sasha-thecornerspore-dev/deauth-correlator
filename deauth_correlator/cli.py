@@ -378,7 +378,9 @@ def _print_summary(analysis, outdir: Path, written: list) -> None:
     print(f"\nCoincidences:    {s.n_coincident}/{s.n_camera} within "
           f"+/-{s.window_s:g}s  (baseline {s.baseline_rate * 100:.1f}%, "
           f"expected {s.expected_by_chance:.1f})")
-    print(f"Rate ratio:      {s.rate_ratio:.2f}x")
+    print("Rate ratio:      "
+          + ("not applicable (no disruptions in either period)"
+             if s.rate_ratio != s.rate_ratio else f"{s.rate_ratio:.2f}x"))
     print(f"p-values:        binomial {s.binom_p:.4g} | permutation {s.perm_p:.4g} | "
           f"Fisher {s.fisher_p:.4g}")
 

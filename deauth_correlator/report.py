@@ -244,9 +244,12 @@ def _statistics(a) -> str:
         f"| All other time | {s.unexposed_minutes:.1f} min | {s.incidents_outside} | "
         f"{s.rate_out_per_min:.4f} /min |",
         "",
-        f"**Rate ratio: {s.rate_ratio:.2f}x** - wireless disruptions were "
-        f"{s.rate_ratio:.2f} times more frequent during the camera windows than at "
-        f"other times.",
+        (f"**Rate ratio: not applicable** - there were no disruptions in either "
+         f"period, so there is no ratio to state."
+         if s.rate_ratio != s.rate_ratio else
+         f"**Rate ratio: {s.rate_ratio:.2f}x** - wireless disruptions were "
+         f"{s.rate_ratio:.2f} times more frequent during the camera windows than at "
+         f"other times."),
     ]
     if s.rate_ratio_corrected:
         lines += [
@@ -645,11 +648,51 @@ def write_manifest(analysis, path: str | Path, outputs: list | None = None) -> P
         "outputs": [rec.__dict__ for rec in (outputs or [])],
         "warnings": analysis.warnings,
     }
-    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    path.write_text(json.dumps(_json_safe(payload), indent=2, default=str,
+                               allow_nan=False), encoding="utf-8")
 
     text_path = path.with_suffix(".txt")
     text_path.write_text(_manifest_text(analysis, outputs or []), encoding="utf-8")
     return path
+
+
+def _json_safe(value):
+    """Replace non-finite floats so the manifest is valid JSON.
+
+    ``json.dumps`` writes bare ``NaN`` and ``Infinity`` tokens by default.
+    Python reads them back, but they are not JSON: every other parser rejects
+    the file. Both arise here in ordinary use - the permutation test yields NaN
+    when there are no disruptions at all, and Fisher's odds ratio is infinite
+    whenever a camera window contains a disruption every time, which is exactly
+    the shape of a strong positive finding.
+
+    A manifest the cover sheet calls machine-readable has to be machine-
+    readable, so non-finite values become ``null`` and the accompanying
+    ``_description`` key records what was replaced. ``allow_nan=False`` at the
+    call site turns any future escape into a loud failure rather than a
+    silently unparseable evidence file.
+    """
+    import math
+
+    if isinstance(value, float):
+        if math.isnan(value):
+            return None
+        if math.isinf(value):
+            return None
+        return value
+    if isinstance(value, dict):
+        cleaned = {k: _json_safe(v) for k, v in value.items()}
+        replaced = sorted(k for k, v in value.items()
+                          if isinstance(v, float) and not math.isfinite(v))
+        if replaced:
+            cleaned["_non_finite_fields"] = {
+                k: ("infinite" if math.isinf(value[k]) else "undefined")
+                for k in replaced
+            }
+        return cleaned
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def _manifest_text(a, outputs: list) -> str:

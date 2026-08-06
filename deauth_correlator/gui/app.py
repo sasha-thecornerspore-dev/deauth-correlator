@@ -1008,8 +1008,11 @@ def _stats_rows(analysis) -> list[tuple[str, str, str]]:
          f"{s.incidents_in_window} incidents over {s.exposed_minutes:.1f} min."),
         ("Disruption rate elsewhere", f"{s.rate_out_per_min:.4f} /min",
          f"{s.incidents_outside} incidents over {s.unexposed_minutes:.1f} min."),
-        ("Rate ratio", f"{s.rate_ratio:.2f}x"
-                       + (" (zero-cell corrected)" if s.rate_ratio_corrected else ""),
+        ("Rate ratio",
+         ("not applicable - no disruptions in either period"
+          if s.rate_ratio != s.rate_ratio else
+          f"{s.rate_ratio:.2f}x"
+          + (" (zero-cell corrected)" if s.rate_ratio_corrected else "")),
          "How much more often disruptions happened during camera windows."),
         ("Deauth frames recovered", f"{analysis.floods.total_frames}",
          f"{analysis.floods.broadcast_frames} addressed to broadcast."),

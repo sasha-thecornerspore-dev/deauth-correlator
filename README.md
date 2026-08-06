@@ -11,7 +11,8 @@ See [SAFETY.md](SAFETY.md).
 
 ```
 CORRELATION FOUND: 12 of 12 camera passes (100%) coincided with a wireless disruption
-within +/-30 s; 1.2 would be expected by chance (p = 1.47e-12, 13.8x the background rate).
+within +/-30 s; 1.2 would be expected by chance (every test p <= 0.0001, 13.8x the
+background rate).
 ```
 
 ---
@@ -78,9 +79,9 @@ python -m deauth_correlator --self-test
 
 That generates synthetic evidence for every supported format, runs the whole pipeline
 over it twice — once with a planted correlation, once with independent random data —
-and checks that the first is found and the second is not. All 141 checks should pass.
+and checks that the first is found and the second is not. All 146 checks should pass.
 
-A base install without the optional extras runs 137 and reports the camera checks as
+A base install without the optional extras runs 142 and reports the camera checks as
 skipped, because those need `requests`. Either count is a pass; a failure names the
 check that failed.
 
@@ -436,7 +437,9 @@ Column names in the CSV parsers are matched by synonym, so `time`/`datetime`/`ts
 work for the timestamp, and the mapping actually used is printed in the report.
 
 **Adding a format** is one file in `deauth_correlator/parsers/` implementing `sniff()`
-and `parse()`, plus one line in `parsers/__init__.py`. Everything else — detection, the
+and `parse()`, plus two entries in `parsers/__init__.py` — one in `REGISTRY` and one in
+`ROLE_PARSERS`, which decides which input flag may select it. A parser added to
+`REGISTRY` alone is never reached by detection. Everything else — detection, the
 CLI, the GUI, the methodology section — picks it up automatically.
 
 ---
@@ -545,6 +548,8 @@ deauth-correlator camera {probe|snapshot|watch|help} [options]
 | `--evidence-bundle [DIR]` | off | build the handover bundle |
 | `--zip` | off | archive the bundle and hash it |
 | `--parser ID` | auto | force a parser |
+| `--no-plot` | off | skip `timeline.png` (useful on a headless machine) |
+| `--check-runtime` | — | report which optional subsystems can be imported, and exit. Needs no display; a standalone build exits non-zero if something bundled cannot load |
 | `-q, --quiet` | off | print only the verdict |
 
 ---

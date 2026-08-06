@@ -326,6 +326,11 @@ def _test_negative(check: Check, analysis) -> None:
                "the negative scenario still parsed its camera events")
 
 
+def _bundle_layout() -> dict:
+    from .evidence import LAYOUT
+    return LAYOUT
+
+
 def _test_outputs(check: Check, analysis, outdir: Path) -> None:
     from .csvout import write_correlation_csv, write_events_csv
     from .evidence import build_bundle
@@ -371,7 +376,47 @@ def _test_outputs(check: Check, analysis, outdir: Path) -> None:
     first = sha256_file(csv_path)
     check.equal(sha256_file(csv_path), first, "file hashing is deterministic")
 
+    # The manifest must be valid JSON to every parser, not just Python's.
+    # json.dumps writes bare NaN and Infinity by default, and Fisher's odds
+    # ratio is infinite on exactly the shape of a strong positive finding.
+    def _reject(token):
+        raise ValueError(f"non-JSON literal {token!r}")
+
+    try:
+        json.loads(manifest.read_text(encoding="utf-8"), parse_constant=_reject)
+        strict_ok, detail = True, ""
+    except ValueError as exc:
+        strict_ok, detail = False, str(exc)
+    check.that(strict_ok,
+               "MANIFEST.json is valid JSON by the strict grammar, not only to Python",
+               detail)
+
     bundle = build_bundle(analysis, outdir / "bundle", copy_inputs=True, make_zip=True)
+
+    # Rebuilding into the same directory must replace the previous bundle, not
+    # accumulate a second set of evidence copies beside it.
+    before = sorted(p.name for p in (bundle.root / "06_source_files").iterdir())
+    rebuilt = build_bundle(analysis, outdir / "bundle", copy_inputs=True)
+    after = sorted(p.name for p in (rebuilt.root / "06_source_files").iterdir())
+    check.equal(after, before,
+                "rebuilding a bundle replaces the previous one rather than "
+                "accumulating duplicate evidence copies")
+    custody = (rebuilt.root / "chain_of_custody.log").read_text(encoding="utf-8")
+    check.equal(custody.count("Bundle started"), 1,
+                "and the chain-of-custody log describes only the current build")
+
+    cover = (rebuilt.root / "00_READ_ME_FIRST.txt").read_text(encoding="utf-8")
+    present = {p.name for p in rebuilt.root.iterdir()}
+    missing = [name for name in _bundle_layout().values()
+               if name in present and name not in cover]
+    check.that(not missing,
+               "the bundle cover sheet lists every file the bundle actually contains",
+               f"present but absent from the inventory: {missing}")
+    phantom = [name for name in _bundle_layout().values()
+               if name not in present and name in cover]
+    check.that(not phantom,
+               "and describes no file that is not there",
+               f"described but missing: {phantom}")
     check.that((bundle.root / "01_report.md").exists(), "the bundle contains the report")
     check.that((bundle.root / "00_MANIFEST.json").exists(),
                "the bundle contains the manifest")

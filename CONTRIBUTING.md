@@ -79,7 +79,7 @@ every module begins with `from __future__ import annotations`.
 
 ```bash
 git clone <your fork>
-cd CamLink
+cd deauth-correlator
 python -m venv .venv
 . .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[all]"
@@ -113,8 +113,8 @@ python -m deauth_correlator --self-test
 ```
 
 It writes synthetic fixtures for every parser in the registry into a temporary directory,
-runs the entire pipeline over them twice, checks 141 assertions, and prints
-`SELF-TEST PASSED: all 141 checks passed.` The process exits 0 on success and 1 on
+runs the entire pipeline over them twice, checks 146 assertions, and prints
+`SELF-TEST PASSED: all 146 checks passed.` The process exits 0 on success and 1 on
 failure. Run it before you open a pull request and paste the final line into the
 description.
 
@@ -399,7 +399,7 @@ glossary, and no adjective where a number would do.
 
 Before opening a pull request:
 
-1. `python -m deauth_correlator --self-test` passes, all 141 checks (more, if you added
+1. `python -m deauth_correlator --self-test` passes, all 146 checks (more, if you added
    any). Paste the final line into the description.
 2. If you touched `stats.py`, `drops.py` or the de-duplication code, section 9 has a new
    check that fails without your change. Say in the description which check it is.
@@ -410,8 +410,9 @@ Before opening a pull request:
    for it.
 5. Nothing in `SAFETY.md` has become untrue. If your change adds a `socket`, `subprocess`
    or network call, the table in that document has to grow a row, and the pull request has
-   to explain why the call is necessary and why it is read-only. The three greps in
-   SAFETY.md are meant to return exactly four hits; a fifth needs an entry.
+   to explain why the call is necessary and why it is read-only. The four greps in
+   SAFETY.md are meant to return only the sixteen lines its table accounts for; a line
+   the table does not explain needs an entry.
 6. No evidence, real captures or case material in the diff. `.gitignore` covers `*.cap`,
    `*.pcap`, `*.pcapng`, `*.kismet`, `output/`, `evidence_*/` and `exhibits/`, but check
    anyway.
