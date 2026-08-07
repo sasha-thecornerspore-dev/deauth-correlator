@@ -207,10 +207,29 @@ because they are also how you check an application someone hands you.
 
 ```bash
 ./deauth-correlator --version         # deauth-correlator <version>
-./deauth-correlator --self-test       # SELF-TEST PASSED: all 146 checks passed.
+./deauth-correlator --self-test       # SELF-TEST PASSED: all 150 checks passed.
 ./deauth-correlator --check-runtime   # every bundled subsystem must load
 ./deauth-correlator --list-parsers
 ```
+
+Every build also writes `CONTENTS.sha256` listing each file with its SHA-256, plus
+`verify-install.ps1` and `verify-install.sh`. They exist because a build that leaves CI
+intact can still arrive damaged, and the failure that produces — a PyInstaller startup
+hook aborting on a missing Tk data directory — happens before any of the program's own
+code runs. Nothing inside the frozen application can report on it, so the verifier
+deliberately does not depend on the application working:
+
+```bash
+powershell -ExecutionPolicy Bypass -File verify-install.ps1   # Windows
+sh verify-install.sh                                          # macOS and Linux
+```
+
+Exit 0 means the installation matches the archive it was built from; exit 1 names the
+files that are missing or altered.
+
+A quicker smoke test is `./deauth-correlator --version`. Because that same startup hook
+runs before the version is printed, a successful `--version` proves the Tk data survived
+extraction.
 
 `--check-runtime` is the one that catches a dead graphical interface. Neither
 `--version` nor `--self-test` touches Tkinter, so a bundle missing the Tk

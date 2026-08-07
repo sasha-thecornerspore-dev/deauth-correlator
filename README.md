@@ -41,7 +41,22 @@ background rate).
 Download the archive for your platform from the
 [Releases page](https://github.com/sasha-thecornerspore-dev/deauth-correlator/releases)
 and unpack it. It contains `deauth-correlator` (command line) and
-`deauth-correlator-gui`, and needs nothing else installed.
+`deauth-correlator-gui`, and needs nothing else installed. On macOS the archive
+holds a single `deauth-correlator.app`; the command-line tool is inside it at
+`deauth-correlator.app/Contents/MacOS/deauth-correlator`.
+
+Extract it with a real archiver — 7-Zip or `Expand-Archive` on Windows, `tar -xzf`
+on macOS — and confirm it arrived whole:
+
+```bash
+powershell -ExecutionPolicy Bypass -File verify-install.ps1   # Windows
+sh verify-install.sh                                          # macOS and Linux
+```
+
+That checks every file against the `CONTENTS.sha256` shipped in the archive and
+exits non-zero if anything is missing or altered. It is worth doing once: a partial
+extraction produces a startup crash whose message points at PyInstaller rather than
+at the real cause.
 
 On macOS the app is not code-signed, so Gatekeeper will refuse it on a double-click:
 right-click the app and choose **Open**, then confirm. See
@@ -79,9 +94,9 @@ python -m deauth_correlator --self-test
 
 That generates synthetic evidence for every supported format, runs the whole pipeline
 over it twice — once with a planted correlation, once with independent random data —
-and checks that the first is found and the second is not. All 146 checks should pass.
+and checks that the first is found and the second is not. All 150 checks should pass.
 
-A base install without the optional extras runs 142 and reports the camera checks as
+A base install without the optional extras runs 143 and reports the camera checks as
 skipped, because those need `requests`. Either count is a pass; a failure names the
 check that failed.
 
@@ -581,6 +596,35 @@ one ruins a case:
 **"no parser recognized this file"** — run `--list-parsers` and force one with
 `--parser <id>`. If the file is a capture, check the magic bytes: `xxd file.cap | head -1`
 should start `d4c3b2a1`, `a1b2c3d4` or `0a0d0d0a`.
+
+**The standalone build fails to start with a PyInstaller traceback** — most often:
+
+```
+Failed to execute script 'pyi_rth__tkinter' due to unhandled exception:
+Tk data directory "...\_internal\_tk_data" not found.
+```
+
+The archive did not extract completely. Every published build contains that directory;
+the usual cause is Explorer's built-in zip viewer stopping part way without saying so, or
+antivirus holding some of the several hundred small Tcl script files.
+
+Check the installation:
+
+```bash
+powershell -ExecutionPolicy Bypass -File verify-install.ps1
+```
+
+It lists any file that is missing or altered and exits non-zero. On macOS and Linux run
+`sh verify-install.sh`. Both compare every file against `CONTENTS.sha256`, which ships in
+the archive.
+
+The fix is to delete the folder and extract again, preferring 7-Zip or
+`Expand-Archive` on Windows and `tar -xzf` on macOS.
+
+This failure happens inside PyInstaller's startup hook, before any of the program's own
+code runs, so `--check-runtime` and `--self-test` cannot diagnose it — they abort with the
+same traceback. That is also why `deauth-correlator --version` doubles as an integrity
+check: if it prints a version at all, the Tk data is present and findable.
 
 **Zero deauth frames from a capture that should have them** — the adapter was probably
 not in monitor mode. The tool says so explicitly when the capture contains packets whose

@@ -183,6 +183,140 @@ def locate_artefacts(dist: Path) -> tuple[Path, Path, Path, Path | None]:
     return outdir, cli, gui, (app if app.is_dir() else None)
 
 
+CONTENTS_MANIFEST = "CONTENTS.sha256"
+VERIFY_WINDOWS = "verify-install.ps1"
+VERIFY_UNIX = "verify-install.sh"
+
+VERIFY_PS1 = r"""# Verify a deauth-correlator installation is complete and unmodified.
+#
+# Run this if the program fails to start, and in particular if it reports
+#   Tk data directory "...\_internal\_tk_data" not found
+# which means the archive did not extract completely. That failure happens
+# inside PyInstaller's startup hook, before any of the program's own code runs,
+# so the program cannot diagnose it for you - hence this script, which does not
+# depend on the program working at all.
+#
+#   powershell -ExecutionPolicy Bypass -File verify-install.ps1
+#
+# Exit codes: 0 intact, 1 files missing or altered, 2 the manifest is absent.
+
+$ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$manifest = Join-Path $root "CONTENTS.sha256"
+
+if (-not (Test-Path $manifest)) {
+    Write-Host "CONTENTS.sha256 is missing, so this installation cannot be checked."
+    Write-Host "Re-extract the archive you downloaded."
+    exit 2
+}
+
+$missing = 0; $changed = 0; $checked = 0
+foreach ($line in Get-Content $manifest) {
+    if ($line -match '^\s*(#|$)') { continue }
+    $expected, $relative = $line -split '\s+', 2
+    $path = Join-Path $root $relative.Trim()
+    $checked++
+    if (-not (Test-Path -LiteralPath $path)) {
+        Write-Host "MISSING  $relative"; $missing++; continue
+    }
+    $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLower()
+    if ($actual -ne $expected.ToLower()) { Write-Host "CHANGED  $relative"; $changed++ }
+}
+
+Write-Host ""
+Write-Host "$checked file(s) checked, $missing missing, $changed altered."
+if ($missing -or $changed) {
+    Write-Host ""
+    Write-Host "This installation is not intact. Delete the folder and extract the"
+    Write-Host "archive again - prefer 7-Zip or 'Expand-Archive' over dragging files"
+    Write-Host "out of Explorer's zip viewer, which can stop part way without saying so."
+    exit 1
+}
+Write-Host "This installation matches the archive it was built from."
+exit 0
+"""
+
+VERIFY_SH = r"""#!/bin/sh
+# Verify a deauth-correlator installation is complete and unmodified.
+#
+# Run this if the program fails to start. A missing Tk data directory aborts
+# inside PyInstaller's startup hook, before any of the program's own code runs,
+# so the program cannot diagnose it for you - hence this script, which does not
+# depend on the program working at all.
+#
+#   sh verify-install.sh
+#
+# Exit codes: 0 intact, 1 files missing or altered, 2 the manifest is absent.
+
+root=$(cd "$(dirname "$0")" && pwd)
+manifest="$root/CONTENTS.sha256"
+
+if [ ! -f "$manifest" ]; then
+    echo "CONTENTS.sha256 is missing, so this installation cannot be checked."
+    echo "Re-extract the archive you downloaded."
+    exit 2
+fi
+
+if command -v shasum >/dev/null 2>&1; then
+    check="shasum -a 256 -c --quiet"
+elif command -v sha256sum >/dev/null 2>&1; then
+    check="sha256sum -c --quiet"
+else
+    echo "Neither shasum nor sha256sum is available; cannot verify."
+    exit 2
+fi
+
+cd "$root" || exit 2
+if $check "$manifest"; then
+    echo "This installation matches the archive it was built from."
+    exit 0
+fi
+
+echo ""
+echo "This installation is not intact. Delete the folder and extract the archive"
+echo "again. On macOS, use 'tar -xzf' rather than double-clicking, which can"
+echo "mishandle the symlinks inside an application bundle."
+exit 1
+"""
+
+
+def write_contents_manifest(outdir: Path) -> int:
+    """Hash every file in the finished build so an install can be checked later.
+
+    A build that leaves CI intact can still arrive damaged: an archive that
+    stopped extracting part way is indistinguishable from a broken build to
+    someone looking at a PyInstaller traceback, and the traceback for a missing
+    Tk data directory is raised by a startup hook that runs before any of this
+    program's code. Nothing inside the frozen application can report on it, so
+    the manifest and the two scripts beside it deliberately do not depend on the
+    application running.
+    """
+    entries = []
+    for path in sorted(p for p in outdir.rglob("*") if p.is_file()):
+        relative = path.relative_to(outdir).as_posix()
+        if relative in (CONTENTS_MANIFEST, VERIFY_WINDOWS, VERIFY_UNIX):
+            continue
+        entries.append(f"{sha256_file(path)}  {relative}")
+
+    header = [
+        "# deauth-correlator installation manifest.",
+        "# Every file this build produced, with its SHA-256.",
+        "# Check an installation against it with verify-install.ps1 (Windows)",
+        "# or verify-install.sh (macOS and Linux).",
+    ]
+    (outdir / CONTENTS_MANIFEST).write_text(
+        "\n".join(header + entries) + "\n", encoding="utf-8")
+
+    (outdir / VERIFY_WINDOWS).write_text(VERIFY_PS1, encoding="utf-8")
+    unix = outdir / VERIFY_UNIX
+    unix.write_text(VERIFY_SH, encoding="utf-8", newline="\n")
+    try:
+        unix.chmod(unix.stat().st_mode | 0o111)
+    except OSError:
+        pass
+    return len(entries)
+
+
 def copy_documents(outdir: Path, app: Path | None) -> list[str]:
     """Put the documentation next to the executables. Returns what was copied."""
     copied = []
@@ -351,6 +485,11 @@ def build(args) -> int:
     say("    a display, so check it by hand once per platform.")
 
     copied = copy_documents(outdir, app)
+    manifest_count = write_contents_manifest(outdir)
+    # On macOS the archive carries the .app alone, so the collection's
+    # manifest would never reach anyone. The bundle needs its own.
+    if app is not None:
+        manifest_count += write_contents_manifest(app)
 
     rule("Artefacts")
     say(f"{outdir}{os.sep}")
@@ -367,6 +506,8 @@ def build(args) -> int:
         say("    to produce one file, which does.")
     if copied:
         say(f"  copied alongside the executables: {', '.join(copied)}")
+    say(f"  {CONTENTS_MANIFEST}: {manifest_count} file(s) hashed, with "
+        f"{VERIFY_WINDOWS} and {VERIFY_UNIX} beside it")
 
     if args.archive:
         archive = make_archive(dist, outdir, app, version)

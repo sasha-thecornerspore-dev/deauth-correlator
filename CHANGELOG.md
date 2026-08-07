@@ -7,6 +7,50 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Because
 output of this tool is used as evidence, any change to how a verdict is reached will be
 listed explicitly, with the direction of its effect stated.
 
+## [1.0.3] - 2026-08-07
+
+A distribution fix, prompted by a real report: the standalone Windows build failed to
+start with
+
+```
+Failed to execute script 'pyi_rth__tkinter' due to unhandled exception:
+Tk data directory "...\_internal\_tk_data" not found.
+```
+
+The published archives were not at fault — all three contain that directory, 93 entries
+of it — and the installation turned out to have extracted incompletely. But the message
+points at PyInstaller rather than at the cause, and nothing in the program could say so.
+
+### Added
+
+- **`CONTENTS.sha256`, `verify-install.ps1` and `verify-install.sh` now ship inside every
+  standalone archive.** They list every file with its SHA-256 and check an installation
+  against it, naming whatever is missing or altered and exiting non-zero.
+
+  They deliberately do not depend on the program working. A missing Tk data directory
+  aborts inside PyInstaller's startup hook, which runs *before any of this project's
+  code*, so `--version`, `--self-test` and `--check-runtime` all die with the identical
+  traceback. No self-diagnostic inside the frozen application can reach that failure, and
+  `--check-runtime` — added in 1.0.1 precisely to catch a dead graphical interface — is
+  no help here.
+
+  On macOS the manifest is written into the `.app` as well as beside it, since the
+  archive carries the bundle alone.
+
+### Documentation
+
+- A troubleshooting entry maps that traceback to its actual cause and to the fix:
+  re-extract with a real archiver rather than Explorer's built-in zip viewer, which can
+  stop part way without reporting it.
+- The install instructions now say what the archive contains on macOS (one `.app`, with
+  the command-line tool inside it) and recommend verifying the extraction once.
+- Recorded that `deauth-correlator --version` doubles as an integrity check: because the
+  same startup hook runs first, a version that prints at all proves the Tk data survived.
+
+### Note
+
+Nothing in the analysis changed. Reports produced by 1.0.1 or 1.0.2 need no revisiting.
+
 ## [1.0.2] - 2026-08-05
 
 A packaging fix. Nothing here changes how a verdict is reached, and no analysis result
@@ -24,7 +68,7 @@ differs from 1.0.1.
 
   The camera checks now live in their own function, called only when the import succeeds,
   and their absence is reported as a skip rather than passed over silently. A base install
-  runs 142 checks and names what was skipped; a full install runs 146.
+  runs 143 checks and names what was skipped; a full install runs 150.
 
   This was found by CI and could not have been found locally: every environment on the
   development machine had `requests` installed.
@@ -151,7 +195,7 @@ verify its claims, and a claim that does not survive checking is worse than no c
 - `--check-runtime` reports which optional subsystems can be imported. Useful on its own
   for diagnosing an installation, and it is what gates a standalone release.
 - A tenth self-test section asserting the read-only and chain-of-custody guarantees, so
-  each of the defects above fails the suite if it returns. 146 checks in total.
+  each of the defects above fails the suite if it returns. 150 checks in total.
 
 ## [1.0.0] - 2026-08-03
 

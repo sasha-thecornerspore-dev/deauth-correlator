@@ -988,6 +988,37 @@ def _test_guarantees(check: Check, directory: Path) -> None:
     check.that(frame is not None and frame.reason_code is None and frame.protected,
                "a protected management frame yields no reason code")
 
+    # -- an extracted install must be checkable without running the program --
+    # A missing Tk data directory aborts inside PyInstaller's startup hook,
+    # before any of this code runs, so the verifier that ships beside the build
+    # must not depend on the program working. Check the tooling that writes it.
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packaging"))
+        import build as _build
+
+        sample = directory / "manifest"
+        (sample / "sub").mkdir(parents=True, exist_ok=True)
+        (sample / "a.txt").write_text("one", encoding="utf-8")
+        (sample / "sub" / "b.txt").write_text("two", encoding="utf-8")
+        hashed = _build.write_contents_manifest(sample)
+        listing = (sample / _build.CONTENTS_MANIFEST).read_text(encoding="utf-8")
+        check.equal(hashed, 2, "the install manifest hashes every file in the build")
+        check.that("a.txt" in listing and "sub/b.txt" in listing,
+                   "and records them with forward-slash relative paths")
+        check.that((sample / _build.VERIFY_WINDOWS).is_file()
+                   and (sample / _build.VERIFY_UNIX).is_file(),
+                   "both verifier scripts ship beside the manifest")
+        hashed_paths = [line.split("  ", 1)[1]
+                        for line in listing.splitlines()
+                        if line and not line.startswith("#")]
+        check.that(_build.CONTENTS_MANIFEST not in hashed_paths
+                   and _build.VERIFY_WINDOWS not in hashed_paths,
+                   "the manifest excludes itself and the verifier scripts, which "
+                   "cannot hash to a value recorded inside themselves")
+    except ImportError:
+        check.that(True, "packaging tooling not present in this install; "
+                         "manifest checks skipped")
+
     # -- a build whose graphical interface is dead must be detectable --------
     flags = {opt for action in cli_module.build_parser()._actions
              for opt in action.option_strings}
