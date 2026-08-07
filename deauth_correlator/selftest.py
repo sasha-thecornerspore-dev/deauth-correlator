@@ -990,34 +990,48 @@ def _test_guarantees(check: Check, directory: Path) -> None:
 
     # -- an extracted install must be checkable without running the program --
     # A missing Tk data directory aborts inside PyInstaller's startup hook,
-    # before any of this code runs, so the verifier that ships beside the build
+    # before any of this code runs, so the verifier that ships beside a build
     # must not depend on the program working. Check the tooling that writes it.
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "packaging"))
-        import build as _build
+    #
+    # The module is loaded from its path rather than imported by name. Both
+    # "build" and "packaging" are real packages on PyPI, so putting the
+    # packaging directory on sys.path and importing "build" picks up whichever
+    # of those happens to be installed - in CI that is the build frontend, which
+    # imports fine and then fails with AttributeError, sailing straight past an
+    # ImportError guard.
+    import importlib.util
+
+    build_py = Path(__file__).resolve().parent.parent / "packaging" / "build.py"
+    if not build_py.is_file():
+        check.that(True, "packaging tooling is not part of an installed package; "
+                         "install-manifest checks skipped")
+    else:
+        spec = importlib.util.spec_from_file_location(
+            "deauth_correlator_packaging_build", build_py)
+        packaging_build = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(packaging_build)
 
         sample = directory / "manifest"
         (sample / "sub").mkdir(parents=True, exist_ok=True)
         (sample / "a.txt").write_text("one", encoding="utf-8")
         (sample / "sub" / "b.txt").write_text("two", encoding="utf-8")
-        hashed = _build.write_contents_manifest(sample)
-        listing = (sample / _build.CONTENTS_MANIFEST).read_text(encoding="utf-8")
+
+        hashed = packaging_build.write_contents_manifest(sample)
+        listing = (sample / packaging_build.CONTENTS_MANIFEST).read_text(
+            encoding="utf-8")
+        recorded = [line.split("  ", 1)[1] for line in listing.splitlines()
+                    if line and not line.startswith("#")]
+
         check.equal(hashed, 2, "the install manifest hashes every file in the build")
-        check.that("a.txt" in listing and "sub/b.txt" in listing,
-                   "and records them with forward-slash relative paths")
-        check.that((sample / _build.VERIFY_WINDOWS).is_file()
-                   and (sample / _build.VERIFY_UNIX).is_file(),
+        check.equal(sorted(recorded), ["a.txt", "sub/b.txt"],
+                    "and records them with forward-slash relative paths")
+        check.that((sample / packaging_build.VERIFY_WINDOWS).is_file()
+                   and (sample / packaging_build.VERIFY_UNIX).is_file(),
                    "both verifier scripts ship beside the manifest")
-        hashed_paths = [line.split("  ", 1)[1]
-                        for line in listing.splitlines()
-                        if line and not line.startswith("#")]
-        check.that(_build.CONTENTS_MANIFEST not in hashed_paths
-                   and _build.VERIFY_WINDOWS not in hashed_paths,
+        check.that(packaging_build.CONTENTS_MANIFEST not in recorded
+                   and packaging_build.VERIFY_WINDOWS not in recorded,
                    "the manifest excludes itself and the verifier scripts, which "
                    "cannot hash to a value recorded inside themselves")
-    except ImportError:
-        check.that(True, "packaging tooling not present in this install; "
-                         "manifest checks skipped")
 
     # -- a build whose graphical interface is dead must be detectable --------
     flags = {opt for action in cli_module.build_parser()._actions
