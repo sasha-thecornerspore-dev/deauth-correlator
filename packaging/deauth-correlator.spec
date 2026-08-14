@@ -149,6 +149,18 @@ hiddenimports += [
     "sqlite3",
     # Every displayed time is converted through zoneinfo.
     "zoneinfo",
+    # The live camera view imports these inside a function, because both are
+    # optional dependencies and importing them at module scope would break a
+    # base install. PyInstaller's analysis does not reliably follow a lazy
+    # import, so they are named here. PIL.ImageTk in particular needs the
+    # compiled _imagingtk extension, which currently arrives only because
+    # PIL's own hook happens to collect it - naming it makes that deliberate
+    # rather than incidental. Getting this wrong produces a build whose live
+    # view is dead while everything else works, which is the same shape as the
+    # missing Tk data directory that 1.0.3 was released to make detectable.
+    "PIL.ImageTk",
+    "PIL._imagingtk",
+    "cv2",
 ]
 
 if _installed("tzdata"):

@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from . import __version__, __tool_name__
@@ -49,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if argv and argv[0] == "camera":
         return _camera_command(argv[1:])
+    if argv and argv[0] == "update":
+        return _update_command(argv[1:])
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -402,6 +405,109 @@ def _print_summary(analysis, outdir: Path, written: list) -> None:
     print(f"  {outdir / 'MANIFEST.json'}")
 
 
+def _update_command(argv: list[str]) -> int:
+    """Check for a newer release, and install one only when told to.
+
+    The check is a read. The install is not, so it never happens implicitly:
+    every report and every MANIFEST.json records the version that produced it,
+    and a tool that replaces itself between the analysis and the question
+    "which version produced this?" cannot answer it. A staged update is also
+    never completed by the process being replaced - that is what the completion
+    step exists for.
+    """
+    from . import update as updater
+
+    parser = argparse.ArgumentParser(
+        prog="deauth-correlator update",
+        description="Check for a newer release and, when asked, install it.",
+        epilog="Downloads are checked against the SHA-256 published with the "
+               "release before anything is replaced, and the previous install "
+               "is kept so a bad update can be rolled back.")
+    parser.add_argument("action", nargs="?", default="check",
+                        choices=("check", "install", "endpoints"),
+                        help="check: report whether a newer release exists. "
+                             "install: download, verify and stage it. "
+                             "endpoints: list every host an update can contact.")
+    parser.add_argument("--yes", action="store_true",
+                        help="install without the confirmation prompt.")
+    parser.add_argument("--timeout", type=float, default=15.0, metavar="SECONDS")
+    args = parser.parse_args(argv)
+
+    if args.action == "endpoints":
+        print(BANNER)
+        print()
+        print("An update check or download contacts these hosts and no others:")
+        print()
+        for host, why in updater.UPDATE_ENDPOINTS:
+            print(f"  {host}")
+            for line in _wrap(why, 74):
+                print(f"      {line}")
+        print()
+        print(f"User-Agent sent: {updater.USER_AGENT}")
+        print("Nothing else about this machine is transmitted, and nothing is "
+              "uploaded.")
+        return 0
+
+    place = updater.installation()
+    print(BANNER)
+    print()
+    print(place.describe())
+
+    try:
+        release = updater.check_for_update(__version__, timeout=args.timeout)
+    except updater.UpdateError as exc:
+        print(f"\nCould not check for updates: {exc}", file=sys.stderr)
+        return 2
+
+    if release is None:
+        print(f"\n{__version__} is the latest release.")
+        return 0
+
+    print()
+    print(release.summary())
+
+    if args.action == "check":
+        print()
+        print("Install it with:  deauth-correlator update install")
+        return 0
+
+    if not place.is_standalone():
+        print()
+        print("This is not a standalone build, so the update is not applied here.")
+        print(f"Run:  {updater.pip_upgrade_command()}")
+        return 0
+
+    if not args.yes:
+        print()
+        print("This downloads the release, checks it against the published "
+              "SHA-256,")
+        print("unpacks it beside the current install and verifies the result "
+              "before")
+        print("anything is replaced.")
+        try:
+            reply = input("Continue? [y/N] ").strip().lower()
+        except EOFError:
+            reply = ""
+        if reply not in ("y", "yes"):
+            print("Nothing was changed.")
+            return 0
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="deauth-correlator-update-") as tmp:
+            archive = updater.download_and_verify(
+                release, Path(tmp), progress=lambda m: print(f"  {m}"),
+                timeout=args.timeout)
+            staged = updater.stage_update(release, archive, place.root,
+                                          progress=lambda m: print(f"  {m}"))
+    except updater.UpdateError as exc:
+        print(f"\nUpdate aborted, nothing was changed: {exc}", file=sys.stderr)
+        return 1
+
+    print()
+    print(updater.completion_instructions(staged))
+    return 0
+
+
 def _camera_command(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="deauth-correlator camera",
@@ -524,14 +630,22 @@ def _check_runtime() -> int:
         ("camera ONVIF support", "requests",
          "the camera probe and the motion recorder"),
         ("camera snapshots", "cv2",
-         "grabbing a still frame over RTSP"),
+         "grabbing a still frame over RTSP, and decoding the live view"),
+        ("live view rendering", "PIL.ImageTk",
+         "drawing camera frames into the window; needs the compiled "
+         "_imagingtk extension, which a build can silently omit"),
         ("timezone database", "tzdata",
          "on Windows, where the system has none"),
     ]
     # In a frozen build these were bundled deliberately, so a failure to import
     # one means the build is broken rather than that the user chose not to
     # install it. Outside a frozen build they are genuinely optional.
-    required_when_frozen = {"tkinter"}
+    # In a frozen build these were bundled deliberately, so a failure to
+    # import one means the build is broken rather than that the user chose
+    # not to install it. PIL.ImageTk is included because a lazy import in
+    # the live view is easy for PyInstaller to miss, and the result is a
+    # dead feature in an otherwise working build.
+    required_when_frozen = {"tkinter", "PIL.ImageTk"}
 
     print(f"{BANNER}\n")
     print(f"Running {'from a standalone build' if frozen else 'from a Python install'}"

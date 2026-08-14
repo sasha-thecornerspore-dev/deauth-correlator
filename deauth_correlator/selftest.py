@@ -92,7 +92,7 @@ def run_self_test(keep: str | None = None, verbose: bool = True) -> int:
         when something is broken you want the whole picture, not the first
         traceback.
         """
-        print(f"{'' if number == 1 else chr(10)}[{number}/10] {title}")
+        print(f"{'' if number == 1 else chr(10)}[{number}/11] {title}")
         try:
             body()
         except Exception as exc:
@@ -133,6 +133,8 @@ def run_self_test(keep: str | None = None, verbose: bool = True) -> int:
                 lambda: _test_no_fabrication(check))
         section(10, "The read-only and chain-of-custody guarantees hold",
                 lambda: _test_guarantees(check, root / "guarantees"))
+        section(11, "Updating and live view refuse what they should",
+                lambda: _test_update_and_liveview(check, root / "update"))
 
     finally:
         if cleanup is not None:
@@ -1342,6 +1344,148 @@ def _write_airodump(path: Path, camera_times, rng) -> None:
             f"-{45 + i % 20}, {200 + i * 13}, {AP_BSSID.upper()}, HomeNet-5")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+
+def _test_update_and_liveview(check: Check, directory: Path) -> None:
+    """The update path must refuse a hostile archive, and refuse it before it writes.
+
+    These two modules are the only ones that reach outside this machine or take
+    bytes from anywhere but a file the operator named, so their refusals are
+    worth asserting rather than assuming. Everything here is offline: the
+    archives are built in the fixture directory and no host is contacted.
+    """
+    import zipfile
+
+    from . import update as updater
+
+    directory.mkdir(parents=True, exist_ok=True)
+
+    # -- the host allow-list is enforced, not merely documented -------------
+    for url, why in (
+            ("http://api.github.com/x", "plain HTTP is refused"),
+            ("https://evil.example.com/x", "an unlisted host is refused"),
+            ("https://api.github.com.evil.example.com/x",
+             "a host that merely ends with a listed one is refused"),
+            ("https://api.github.com@evil.example.com/x",
+             "a listed host in the userinfo position is refused"),
+            ("https://api.github.com:8443/x", "a port other than 443 is refused"),
+            ("https://api.github.com:notaport/x",
+             "an unparseable port is refused as an UpdateError, not a ValueError")):
+        try:
+            updater._check_url(url)
+            check.that(False, why, f"{url} was accepted")
+        except updater.UpdateError:
+            check.that(True, why)
+        except Exception as exc:                       # noqa: BLE001
+            check.that(False, why,
+                       f"raised {exc.__class__.__name__}, which is not an UpdateError")
+
+    for url in (f"https://{host}/x" for host, _ in updater.UPDATE_ENDPOINTS):
+        try:
+            updater._check_url(url)
+            check.that(True, f"{url.split('/')[2]} is reachable, as documented")
+        except updater.UpdateError as exc:
+            check.that(False, f"{url.split('/')[2]} is reachable, as documented",
+                       str(exc))
+
+    # -- a member name that would escape the extraction directory -----------
+    escapes = [
+        ("../evil.txt", "a member that climbs out with '..'"),
+        ("a/../../evil.txt", "a member that climbs out part-way along"),
+        ("/etc/evil.txt", "a member with an absolute path"),
+        ("C:/evil.txt", "a member with a leading drive letter"),
+        # pathlib treats any component carrying a drive as a fresh anchor, so a
+        # drive letter that is not the first component discards the whole
+        # staging path and writes to another volume entirely.
+        ("a/b/Z:/evil.txt", "a member with a drive letter after the first component"),
+        ("a\\..\\evil.txt", "a member using backslashes"),
+    ]
+    for name, why in escapes:
+        try:
+            updater._safe_parts(name, "hostile.zip")
+            check.that(False, why + " is refused", f"{name!r} was accepted")
+        except updater.UpdateStagingError:
+            check.that(True, why + " is refused")
+
+    # and the same thing through the real extractor, which must write nothing
+    hostile = directory / "hostile.zip"
+    with zipfile.ZipFile(hostile, "w") as zf:
+        zf.writestr("deauth-correlator/ok.txt", "fine\n")
+        zf.writestr("deauth-correlator/_internal/Z:/planted.dll", "arbitrary write\n")
+    into = directory / "hostile-out"
+    try:
+        updater._extract_zip(hostile, into)
+        check.that(False, "the extractor refuses a hostile archive")
+    except updater.UpdateStagingError:
+        written = [p for p in into.rglob("*") if p.is_file()]
+        check.that(not written,
+                   "the extractor refuses a hostile archive before writing anything",
+                   f"it had already written {[p.name for p in written]}")
+
+    # -- a symbolic link may not point out of the tree, however it is spelt --
+    links = directory / "links.zip"
+    with zipfile.ZipFile(links, "w") as zf:
+        zf.writestr(zipfile.ZipInfo("a/"), "")
+        for name, dest in (("a/up", ".."), ("a/up/a/x", "../../../OUTSIDE")):
+            info = zipfile.ZipInfo(name)
+            info.external_attr = 0o120777 << 16
+            zf.writestr(info, dest)
+    try:
+        updater._extract_zip(links, directory / "links-out")
+        check.that(False, "a symbolic link that escapes through an earlier link "
+                          "is refused")
+    except updater.UpdateStagingError:
+        # The escape only works because the first link makes the second one's
+        # real directory shallower than its name suggests, so a lexical check
+        # measures "../../.." against the wrong starting point.
+        check.that(True, "a symbolic link that escapes through an earlier link "
+                         "is refused")
+
+    # -- an honest archive still extracts, exactly ---------------------------
+    good = directory / "good.zip"
+    contents = {"deauth-correlator/CONTENTS.sha256": "manifest\n",
+                "deauth-correlator/_internal/lib/thing.dll": "bytes\n",
+                "deauth-correlator/deauth-correlator.exe": "exe\n"}
+    with zipfile.ZipFile(good, "w") as zf:
+        for name, text in contents.items():
+            zf.writestr(name, text)
+    good_out = directory / "good-out"
+    updater._extract_zip(good, good_out)
+    extracted = sorted(str(p.relative_to(good_out)).replace("\\", "/")
+                       for p in good_out.rglob("*") if p.is_file())
+    check.equal(extracted, sorted(contents),
+                "a legitimate archive extracts with every file where it belongs")
+
+    # -- an update is never installed as a side effect of checking ----------
+    check.that(not any(
+        name in updater.check_for_update.__code__.co_names
+        for name in ("stage_update", "download_and_verify", "complete_update")),
+        "checking for an update cannot install one")
+
+    # -- credentials never reach the screen ---------------------------------
+    try:
+        from .gui.liveview import _redact_credentials
+    except ImportError as exc:
+        check.that(True, f"live view checks skipped - {exc.name} is not installed")
+        return
+
+    sentence = ("The camera refused the credentials. Tried "
+                "rtsp://cam-user:{pw}@192.168.1.64:554/stream1.")
+    expected = ("The camera refused the credentials. Tried "
+                "rtsp://<user>:<password>@192.168.1.64:554/stream1.")
+    # Each of these passwords broke a substring-replacement implementation:
+    # "554" and "stream1" rewrote the port and the path, "camera" edited the
+    # prose, "pass" rewrote the placeholder it had just inserted, and one
+    # containing "@" left its own tail on screen.
+    for password in ("pass", "password", "a", "554", "stream1", "camera",
+                     "Dr1vew@y!2024", "p@ss@word"):
+        check.equal(_redact_credentials(sentence.format(pw=password)), expected,
+                    f"a password of {password!r} is hidden without damaging the "
+                    f"rest of the message")
+    check.that("cam-user" not in _redact_credentials(sentence.format(pw="x")),
+               "the camera account's username is hidden too")
+    check.equal(_redact_credentials("No answer from 192.168.1.64:554."),
+                "No answer from 192.168.1.64:554.",
+                "a message carrying no URL is left exactly as written")
 
 def _write_nzyme(path: Path, attack_times, rng) -> None:
     with open(path, "w", encoding="utf-8", newline="") as fh:

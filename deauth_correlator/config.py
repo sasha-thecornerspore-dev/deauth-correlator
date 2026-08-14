@@ -51,6 +51,11 @@ class AppConfig:
     flood_window_s: float = 10.0
     flood_threshold: int = 5
 
+    # Updates. The check is a single read of the GitHub releases API; installing
+    # is always a separate, explicit act. Set this false to make the program
+    # contact nothing but your camera.
+    check_for_updates: bool = True
+
     # Output
     outdir: str = "output"
     evidence_bundle: bool = False

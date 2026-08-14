@@ -25,12 +25,13 @@ background rate).
 4. [Setting up a monitor-mode adapter and running airodump-ng](#a-setting-up-a-monitor-mode-adapter-and-running-airodump-ng)
 5. [Exporting OPNsense logs](#b-exporting-opnsense-logs)
 6. [TP-Link Tapo C100 setup](#c-tp-link-tapo-c100-setup)
-7. [Input formats](#input-formats)
-8. [Outputs](#outputs)
-9. [How the statistics work](#how-the-statistics-work)
-10. [Command reference](#command-reference)
-11. [Getting the evidence right](#getting-the-evidence-right)
-12. [Troubleshooting](#troubleshooting)
+7. [Keeping it up to date](#keeping-it-up-to-date)
+8. [Input formats](#input-formats)
+9. [Outputs](#outputs)
+10. [How the statistics work](#how-the-statistics-work)
+11. [Command reference](#command-reference)
+12. [Getting the evidence right](#getting-the-evidence-right)
+13. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -94,9 +95,9 @@ python -m deauth_correlator --self-test
 
 That generates synthetic evidence for every supported format, runs the whole pipeline
 over it twice — once with a planted correlation, once with independent random data —
-and checks that the first is found and the second is not. All 150 checks should pass.
+and checks that the first is found and the second is not. All 180 checks should pass.
 
-A base install without the optional extras runs 143 and reports the camera checks as
+A base install without the optional extras runs 173 and reports the camera checks as
 skipped, because those need `requests`. Either count is a pass; a failure names the
 check that failed.
 
@@ -129,9 +130,9 @@ Six tabs, in the order the work actually happens:
 
 | Tab | What it does |
 | --- | --- |
-| **1. Case** | Case number, operator, agency, timezone, camera clock offset. Save and reload a case file so a run can be reproduced later. |
+| **1. Case** | Case number, operator, agency, timezone, camera clock offset. Save and reload a case file so a run can be reproduced later. Also where update checking is switched on or off. |
 | **2. Evidence** | Attach logs, captures and camera events. Each file is hashed and its format detected the moment you add it, so the chain of custody starts before any analysis. |
-| **3. Camera** | Connect to the Tapo C100, measure its clock error, save snapshots, and record live motion events straight into a camera-event CSV. |
+| **3. Camera** | Connect to the Tapo C100, watch the live stream, measure its clock error, save snapshots and single frames as exhibits, and record live motion events straight into a camera-event CSV. |
 | **4. Analyze** | Every analysis parameter, with the reason each one matters, and the run button. |
 | **5. Results** | Verdict banner, per-event table, all the statistics, deauth sources, and the timeline. |
 | **6. Evidence builder** | Assembles the handover bundle: report, tables, figure, hash-verified copies of the sources, your exhibits, manifest, and a zip. |
@@ -411,6 +412,24 @@ recorded event by 44 seconds and destroy a 30-second correlation — or manufact
 false one. The GUI fills the correction in automatically after a probe; on the command
 line pass the offset it prints.
 
+### Watch the camera while you work
+
+The Camera tab in the graphical interface has a live view. Press **Start live view** and
+the RTSP stream appears in the window; **Save this frame** writes the picture on screen
+into the exhibits folder as a timestamped JPEG, named the same way the motion recorder
+names its stills.
+
+It is worth using before a capture rather than during one, to confirm the camera is
+pointed where you think it is and that the timestamp burnt into the picture agrees with
+the clock reading above. Live view needs `opencv-python` and Pillow; the standalone
+builds include both, and a source install without them says so and leaves the button
+disabled rather than failing when you press it.
+
+Two things it deliberately does not do. It does not record — the motion recorder below
+is what produces evidence, and a preview window is not a chain of custody. And starting a
+new session clears the previous picture, so a frame you save always came from the camera
+named on screen.
+
 ### Record motion events while you capture
 
 Run this next to `airodump-ng` so both sides of the evidence cover the same period:
@@ -430,6 +449,54 @@ Other commands: `camera snapshot` saves one frame, `camera help` prints the setu
 stream profiles, opens the RTSP stream to grab frames, and creates one standard ONVIF
 event subscription that the camera expires by itself and the tool removes on exit.
 Nothing is configured, changed or deleted.
+
+---
+
+## Keeping it up to date
+
+The program asks GitHub whether a newer release exists — once at startup, and whenever
+you press **Check now** on the Case tab. On the command line:
+
+```bash
+deauth-correlator update check
+```
+
+This is the only part of the program that contacts anything other than your camera, so
+it is worth being precise about it. The check is a single unauthenticated HTTPS GET of a
+public API. No token, no cookie, no identifier; nothing about you or this machine is
+sent beyond the User-Agent, and nothing is uploaded. The complete list of hosts it can
+reach is a constant in the source, and you can print it without running anything:
+
+```bash
+deauth-correlator update endpoints
+```
+
+**To switch it off,** clear "Check for updates when the program starts" on the Case tab,
+or set `check_for_updates` to `false` in the case file. With it off the program contacts
+nothing but your camera. [SAFETY.md](SAFETY.md#checking-for-updates) sets out the whole
+arrangement, including what is enforced in code rather than merely promised here.
+
+### Installing one
+
+Checking is a read. Installing is not, and it never happens by itself:
+
+```bash
+deauth-correlator update install
+```
+
+That downloads the release, checks it against the SHA-256 published with it, unpacks it
+beside your current installation, verifies the unpacked tree against the
+`CONTENTS.sha256` inside it, and only then prints one command to finish the swap. Your
+existing installation is untouched until you run that command, and is kept afterwards so
+a bad update can be rolled back. Any verification failure aborts and changes nothing.
+
+The reason it is not automatic is the same reason the reports carry a version number.
+Every `report.md` and every `MANIFEST.json` records the version that produced it, and
+software that replaces itself between the analysis and the question "which version
+produced this?" cannot answer it. If you are mid-case, finish the case first.
+
+A `pip` installation is not updated this way — the tool detects that and prints the
+`pip install --upgrade` command instead.
 
 ---
 
@@ -539,6 +606,7 @@ deauth-correlator --gui
 deauth-correlator --self-test
 deauth-correlator --list-parsers
 deauth-correlator camera {probe|snapshot|watch|help} [options]
+deauth-correlator update {check|install|endpoints} [options]
 ```
 
 | Option | Default | Meaning |
@@ -696,7 +764,9 @@ deauth_correlator/
   plot.py       timeline.png                      onvif_min.py    dependency-free ONVIF
   evidence.py   the handover bundle               tapo.py         Tapo C100 profile
   selftest.py   fixtures and checks               recorder.py     motion events -> CSV
-                                                gui/app.py        the six-tab interface
+  update.py     release check and staging       gui/
+                                                  app.py          the six-tab interface
+                                                  liveview.py     the RTSP preview
 ```
 
 ## Documentation

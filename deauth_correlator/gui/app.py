@@ -30,6 +30,7 @@ from ..hashing import Provenance, record_file
 from ..report import write_manifest, write_report
 from ..stats import VERDICT_FOUND, VERDICT_INSUFFICIENT
 from ..timeutil import DEFAULT_TZ
+from .liveview import LiveView
 from .widgets import FileList, LabeledEntry, LogPane, PALETTE, ScrollFrame, make_table
 
 COMMON_ZONES = [
@@ -71,6 +72,11 @@ class App(ttk.Frame):
         self._build_statusbar()
         self._apply_config_to_widgets()
         self.after(120, self._drain_queue)
+        # A single read of the releases API, a moment after the window is
+        # up so it never delays the program starting. Turned off by the box
+        # on the Case tab, after which nothing but the camera is contacted.
+        if self.config_model.check_for_updates:
+            self.after(1500, lambda: self._check_updates(quiet=True))
         master.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # -- chrome ----------------------------------------------------------
@@ -150,6 +156,35 @@ class App(ttk.Frame):
             body, "Camera clock offset (s)", 12, value="0",
             hint="Added to every camera timestamp. Measure it on the Camera tab.")
         self.clock_offset.pack(anchor="w", pady=3)
+
+        ttk.Separator(body).pack(fill="x", pady=16)
+        ttk.Label(body, text="Updates", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        ttk.Label(body, foreground=PALETTE["muted"], wraplength=820, justify="left",
+                  text="The program checks for a newer release when it starts. That is "
+                       "one read of the GitHub releases API and sends nothing about "
+                       "you or this machine. Installing is always a separate step: the "
+                       "version that produced a report is recorded in it, so the "
+                       "program never replaces itself behind your back."
+                  ).pack(anchor="w", pady=(2, 8))
+
+        self.update_status = tk.StringVar(value="Not checked yet.")
+        ttk.Label(body, textvariable=self.update_status,
+                  wraplength=820, justify="left").pack(anchor="w", pady=(0, 6))
+
+        update_row = ttk.Frame(body)
+        update_row.pack(anchor="w")
+        ttk.Button(update_row, text="Check now",
+                   command=self._check_updates).pack(side="left")
+        self.update_install_btn = ttk.Button(
+            update_row, text="Download and stage update",
+            command=self._install_update, state="disabled")
+        self.update_install_btn.pack(side="left", padx=(8, 0))
+        ttk.Button(update_row, text="What does it contact?",
+                   command=self._show_update_endpoints).pack(side="left", padx=(8, 0))
+
+        self.auto_update_check = tk.BooleanVar(value=True)
+        ttk.Checkbutton(body, text="Check for updates when the program starts",
+                        variable=self.auto_update_check).pack(anchor="w", pady=(6, 0))
 
         ttk.Separator(body).pack(fill="x", pady=16)
         buttons = ttk.Frame(body)
@@ -309,7 +344,28 @@ class App(ttk.Frame):
         ttk.Button(watch_buttons, text="Attach this CSV as evidence",
                    command=self._attach_watch_csv).pack(side="left", padx=(8, 0))
 
-        self.camera_log = LogPane(body, height=14)
+        ttk.Separator(body).pack(fill="x", pady=12)
+        ttk.Label(body, text="Live view",
+                  font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(body, foreground=PALETTE["muted"], wraplength=840, justify="left",
+                  text="Watch the camera while you set it up, so you can confirm it is "
+                       "pointed where you think it is and that the picture is usable "
+                       "before you rely on it for evidence. This reads the RTSP stream "
+                       "and nothing else; it records nothing unless you save a frame."
+                  ).pack(anchor="w", pady=(2, 8))
+
+        # The widget reads the camera settings when Start is pressed rather than
+        # at construction, so editing the address or credentials above and
+        # pressing Start again picks up the change without rebuilding the tab.
+        self.live_view = LiveView(
+            body,
+            config=self._camera_config,
+            exhibits_dir=lambda: self.watch_exhibits.get() or "exhibits",
+            tz_name=self.tz_var.get(),
+            on_saved=lambda path: self._post("camera_snapshot", path))
+        self.live_view.pack(fill="both", expand=True, pady=(0, 8))
+
+        self.camera_log = LogPane(body, height=10)
         self.camera_log.pack(fill="both", expand=True, pady=(10, 0))
         self.camera_log.write(
             "Not connected. Enter the camera address and the camera-account "
@@ -735,6 +791,104 @@ class App(ttk.Frame):
 
         threading.Thread(target=work, daemon=True).start()
 
+    # -- updates ---------------------------------------------------------
+
+    def _check_updates(self, quiet: bool = False) -> None:
+        """Ask GitHub whether a newer release exists. Never installs anything."""
+        self.update_status.set("Checking…")
+
+        def work():
+            try:
+                from .. import update as updater
+                release = updater.check_for_update(__version__)
+                self._post("update_result", release)
+            except Exception as exc:
+                self._post("update_failed", (exc, quiet))
+
+        threading.Thread(target=work, name="update-check", daemon=True).start()
+
+    def _install_update(self) -> None:
+        """Download, verify and stage the release, then say how to finish.
+
+        The swap is never performed by this process. On Windows a running
+        executable cannot be replaced, and on any platform replacing the files
+        under a live analysis is a good way to produce a report nobody can
+        account for.
+        """
+        release = getattr(self, "_pending_release", None)
+        if release is None:
+            messagebox.showinfo("Nothing to install", "No newer release is known. "
+                                                      "Press Check now first.")
+            return
+        if self.analysis is None and self.recorder is None:
+            pass
+        if self.recorder is not None and self.recorder.status.running:
+            messagebox.showwarning(
+                "Recording in progress",
+                "Stop the camera recorder before updating.")
+            return
+
+        if not messagebox.askokcancel(
+                f"Install {release.version}?",
+                "This downloads the release, checks it against the SHA-256 "
+                "published with it, unpacks it beside the current install and "
+                "verifies the result.\n\n"
+                "Nothing is replaced until you finish the update from a command "
+                "prompt, and the current install is kept so it can be rolled "
+                "back."):
+            return
+
+        self.update_install_btn.configure(state="disabled")
+        self.update_status.set("Downloading…")
+        self._busy("Downloading the update…")
+
+        def work():
+            import tempfile
+            try:
+                from .. import update as updater
+                place = updater.installation()
+                if not place.is_standalone():
+                    self._post("update_staged_text",
+                               "This is not a standalone build. Update it with:\n    "
+                               + updater.pip_upgrade_command())
+                    return
+                with tempfile.TemporaryDirectory(
+                        prefix="deauth-correlator-update-") as tmp:
+                    archive = updater.download_and_verify(
+                        release, Path(tmp),
+                        progress=lambda m: self._post("update_progress", m))
+                    staged = updater.stage_update(
+                        release, archive, place.root,
+                        progress=lambda m: self._post("update_progress", m))
+                self._post("update_staged_text",
+                           updater.completion_instructions(staged))
+            except Exception as exc:
+                self._post("update_failed", (exc, False))
+
+        threading.Thread(target=work, name="update-install", daemon=True).start()
+
+    def _show_update_endpoints(self) -> None:
+        from .. import update as updater
+
+        window = tk.Toplevel(self.master)
+        window.title("What an update check contacts")
+        window.geometry("700x420")
+        text = tk.Text(window, wrap="word", padx=12, pady=12, font=("Consolas", 9))
+        text.pack(fill="both", expand=True)
+        lines = ["An update check or download contacts these hosts and no others.",
+                 ""]
+        for host, why in updater.UPDATE_ENDPOINTS:
+            lines.append(host)
+            lines.append(f"    {why}")
+            lines.append("")
+        lines.append(f"User-Agent sent: {updater.USER_AGENT}")
+        lines.append("")
+        lines.append("Nothing about this machine is transmitted beyond that, and "
+                     "nothing is uploaded. Turn the check off with the box on the "
+                     "Case tab and the program contacts nothing but your camera.")
+        text.insert("1.0", "\n".join(lines))
+        text.configure(state="disabled")
+
     # -- thread plumbing -------------------------------------------------
 
     def _post(self, kind: str, payload) -> None:
@@ -793,6 +947,31 @@ class App(ttk.Frame):
             self._idle()
             self.bundle_button.configure(state="normal")
             self.bundle_log.write(f"FAILED: {payload}", "error")
+        elif kind == "update_result":
+            release = payload
+            self._pending_release = release
+            if release is None:
+                self.update_status.set(f"{__version__} is the latest release.")
+                self.update_install_btn.configure(state="disabled")
+            else:
+                self.update_status.set(release.summary())
+                self.update_install_btn.configure(state="normal")
+                self.status_var.set(f"Update available: {release.version} "
+                                    f"(Case tab)")
+        elif kind == "update_progress":
+            self.update_status.set(str(payload))
+        elif kind == "update_staged_text":
+            self._idle()
+            self.update_install_btn.configure(state="normal")
+            self.update_status.set("Update staged and verified.")
+            messagebox.showinfo("Update ready to finish", str(payload))
+        elif kind == "update_failed":
+            self._idle()
+            exc, quiet = payload
+            self.update_install_btn.configure(state="normal")
+            self.update_status.set(f"Update check failed: {exc}")
+            if not quiet:
+                messagebox.showerror("Update", f"{exc}")
         elif kind == "error":
             self._idle()
             title, exc = payload
@@ -914,6 +1093,7 @@ class App(ttk.Frame):
             flood_window_s=_float(self.flood_window.get(), 10.0),
             flood_threshold=_int(self.flood_threshold.get(), 5),
             outdir=self.outdir.get() or "output",
+            check_for_updates=self.auto_update_check.get(),
             camera_host=self.cam_host.get(),
             camera_user=self.cam_user.get(),
             camera_onvif_port=_int(self.cam_onvif_port.get(), 2020),
@@ -940,6 +1120,7 @@ class App(ttk.Frame):
         self.alpha.set(c.alpha)
         self.trials.set(c.trials)
         self.do_sensitivity.set(c.sensitivity)
+        self.auto_update_check.set(c.check_for_updates)
         self.handshake_window.set(c.handshake_window_s)
         self.reassoc_window.set(c.reassoc_window_s)
         self.incident_gap.set(c.incident_gap_s)
@@ -977,6 +1158,13 @@ class App(ttk.Frame):
         self.status_var.set(f"Case loaded from {path}")
 
     def _on_close(self) -> None:
+        # Stop the live view first. It holds a worker thread and an open RTSP
+        # connection, and a frame callback arriving after the widgets are gone
+        # raises "invalid command name" out of the Tk event loop.
+        view = getattr(self, "live_view", None)
+        if view is not None and view.is_streaming():
+            view.stop()
+
         if self.recorder and self.recorder.status.running:
             if not messagebox.askokcancel(
                     "Recording in progress",

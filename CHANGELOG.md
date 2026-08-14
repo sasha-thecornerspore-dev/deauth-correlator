@@ -7,6 +7,125 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Because
 output of this tool is used as evidence, any change to how a verdict is reached will be
 listed explicitly, with the direction of its effect stated.
 
+## [1.1.0] - 2026-08-14
+
+Two features that were asked for directly: the program can tell you when a newer release
+exists, and it can show you the camera on the screen. Both are read-only, and both were
+reviewed adversarially before release — that review found nine defects, listed at the
+bottom of this entry, and all nine are fixed here.
+
+### Added
+
+- **Update checking.** `deauth-correlator update check` reports whether a newer release
+  exists; the Case tab does the same automatically when the program starts, and shows
+  the result in the Updates block. This is the first thing in the program that contacts
+  anything other than your camera, so it is documented in full in
+  [SAFETY.md](SAFETY.md#checking-for-updates) and can be switched off completely by
+  clearing "Check for updates when the program starts", or by setting
+  `check_for_updates` to `false` in the case file.
+
+  The check is a single unauthenticated HTTPS GET of GitHub's public releases API. No
+  token, no cookie, no identifier, nothing about you or this machine beyond the
+  User-Agent. Nothing is uploaded. The complete list of hosts it can reach is a constant
+  in the source and can be printed without running an analysis:
+
+  ```
+  deauth-correlator update endpoints
+  ```
+
+  That list is enforced rather than merely documented: redirects are switched off and
+  walked by hand so every hop is checked against it, and the session sets
+  `trust_env = False` so a proxy in the environment cannot redirect the request.
+
+- **Installing an update, only when you say so.** `deauth-correlator update install`
+  downloads the release, checks it against the SHA-256 published with it, unpacks it
+  beside the current installation and verifies the unpacked tree against the
+  `CONTENTS.sha256` inside it — all before anything is replaced. The previous
+  installation is kept, so a bad update can be rolled back, and the final swap is
+  performed by a separate command rather than by the process being replaced.
+
+  It never installs by itself, and that is deliberate. Every report and every
+  `MANIFEST.json` records the version that produced it; software that replaces itself
+  between an analysis and the question "which version produced this?" makes that
+  question unanswerable.
+
+- **Live camera view.** The Camera tab can now show the RTSP stream, with a "Save this
+  frame" button that writes a timestamped JPEG into the exhibits folder using the same
+  naming as the motion recorder. It needs `opencv-python` and Pillow; without them the
+  tab says so and stays inert rather than failing at the click.
+
+- **Thirty new self-test checks**, covering exactly the refusals the two new modules are
+  responsible for: the host allow-list, six kinds of archive member that would escape the
+  extraction directory, symbolic links that point out of the tree, and credential
+  redaction. `--self-test` now runs 180 checks, or 173 without the optional dependencies.
+
+### Fixed
+
+Nine defects found by an adversarial review of the two new modules, each reproduced
+before it was fixed and covered by a self-test check afterwards where the fix is
+checkable offline.
+
+- **An archive could write outside the directory it was extracted into.** The extractor
+  rejected a Windows drive letter only at the very start of a member name, so
+  `_internal/Z:/planted.dll` passed. `pathlib` treats any component carrying a drive as a
+  fresh anchor, which discards the whole staging path — the file landed on `Z:\` instead,
+  and because it never appeared in the extracted tree, the tree still matched its own
+  manifest and the update was reported as verified. Every component is now checked, and
+  every member is checked against where it *really* resolves before anything is created.
+
+- **A symbolic link could escape the tree by going through another link in the same
+  archive.** The containment check resolved the link text against the path the member
+  spelled rather than against the directory it actually landed in, and those two diverge
+  as soon as an earlier member is a link that shortens the path. Resolution is now done
+  against the real parent. This affected macOS most, since the `.app` archive is the only
+  one that contains links at all.
+
+- **Two failure paths raised exceptions that were not `UpdateError`**, so a caller
+  catching the module's own base class got a traceback instead of a message: a malformed
+  port in a redirect target, and a member that could not be written.
+
+- **The live view could save one camera's frame as another camera's exhibit.** Starting a
+  new session did not clear the previous frame, so if you retyped the address for a
+  second camera and that camera failed to answer, the first camera's picture stayed on
+  the canvas with "Save this frame" still armed — and the saved exhibit carried the new
+  camera's name. Starting a session now drops the previous frame. Stopping still keeps
+  it, which is the case where it is genuinely still yours to save.
+
+- **Stopping the live view under-reported that it was still running.** When the decoder
+  did not return within the timeout, the thread handle was dropped anyway, so
+  `is_streaming()` said False while an RTSP session was still open. Start's
+  "pressing it twice is harmless" guard then never fired, and each Stop/Start cycle
+  stacked another connection on a camera that serves only two or three. The handle is now
+  kept, Start is disabled until the decoder reports in, and the status says so.
+
+- **Redacting the password mangled the message it was protecting.** It replaced the
+  password as a substring, twice over the same text, so a password of `pass` rewrote the
+  `pass` inside the `<password>` placeholder it had just inserted and produced
+  `<<<password>word>word>`; a password of `554` rewrote the port, and one of `camera`
+  edited the prose. It also hid only the password, leaving the camera account's username
+  on screen in clear text. The whole userinfo of any RTSP URL is now rewritten in one
+  pass, which cannot cascade, cannot corrupt the rest of the sentence, and hides both
+  credentials.
+
+- **A frozen stream could report "Live." indefinitely.** The watchdog measured time since
+  the last failed frame grab, which a stream whose grabs keep succeeding while its
+  decodes fail never sets. It now measures time since the last frame actually displayed,
+  which covers all three ways a stream can go quiet.
+
+- **A missing dependency stopped being reported after the first Stop.** Stopping
+  re-enabled the Start button unconditionally and overwrote the install instructions with
+  "Stopped.", leaving a machine without OpenCV showing a live-looking button and no
+  explanation of why it would not work.
+
+### Changed
+
+- `--check-runtime` now also reports whether live view rendering and update checking are
+  available, and treats `PIL.ImageTk` as required in a standalone build.
+- [SAFETY.md](SAFETY.md) no longer claims the camera is the only thing this program ever
+  contacts, because as of this release that is not true. The claim has been replaced with
+  a section that names the fifth destination, says exactly what is sent, and says how to
+  switch it off.
+
 ## [1.0.3] - 2026-08-07
 
 A distribution fix, prompted by a real report: the standalone Windows build failed to

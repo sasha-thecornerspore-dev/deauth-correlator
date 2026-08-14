@@ -31,10 +31,11 @@ sockets directly, so `grep socket` misses it entirely. Nor do they catch
 first three and claimed they enumerated everything, which was wrong. If you are auditing
 this, run all four.
 
-Together they return sixteen lines and nothing else: 1, 4, 3 and 8 respectively. Those
-sixteen describe the seven distinct things in the table below — several appear twice,
-as an `import` line and again at the call site. Each is listed so a hit does not have to
-be chased down.
+Together they return twenty-seven lines and nothing else: 1, 8, 3 and 15 respectively.
+Those describe the nine distinct things in the table below — most appear more than once,
+as an `import` line, a call site, and the exception types named when the call fails. One
+`socket` hit is the word inside a docstring. Each is listed so a hit does not have to be
+chased down.
 
 The fourth grep is deliberately narrow, matching call sites rather than the bare words.
 A looser pattern such as `"webbrowser|startfile|requests\.|urllib|http"` also matches the
@@ -50,6 +51,8 @@ the self-test's fixture strings — around forty lines, none of which touch the 
 | `os.startfile(path)` | `gui/app.py::_open_path` | the same thing on Windows |
 | `webbrowser.open(path.as_uri())` | `gui/app.py::_open_path` | last-resort fallback for the same action, handed a `file://` URI pointing inside your own output directory. It is reached only if the two calls above raise |
 | `requests.Session()`, `session.post(...)` | `camera/onvif_min.py` | the ONVIF client. Every request goes to the camera address you entered and nowhere else — see the two settings below that make that true |
+| `socket.create_connection` | `gui/liveview.py::_reach_rtsp` | a TCP connect to the camera's RTSP port before opening the live view, so an unreachable camera reports that rather than hanging inside OpenCV. Closed immediately |
+| `requests.Session()`, `session.get(...)` | `update.py` | the update check and download. This is the only part of the program that contacts anything other than your camera; the section "Checking for updates" below sets out exactly what it reaches and how to switch it off |
 
 Two properties of that session are worth checking by eye, because without them the
 "nowhere else" claim above would be false:
@@ -92,7 +95,62 @@ expiry that the camera enforces on its own, and the recorder removes it explicit
 stopped or when the window closes. No camera setting is read for modification, changed,
 or deleted.
 
-No other network destination is ever contacted. Nothing is uploaded anywhere.
+Apart from the update check described next, no other network destination is ever
+contacted. Nothing is uploaded anywhere, ever, by any part of this program.
+
+## Checking for updates
+
+Until version 1.1.0 this document said that the camera was the only thing the program
+ever contacted. That is no longer true, and rather than quietly soften the sentence it is
+worth stating plainly what changed.
+
+The program asks GitHub whether a newer release exists. By default it does this once when
+it starts. It is a single HTTPS GET of a public API, unauthenticated — no token, no
+cookies, no identifier — and it sends nothing about you or this machine beyond the
+User-Agent and the TLS connection itself. Nothing is uploaded. The complete list of hosts
+it can reach is a constant in the source, `UPDATE_ENDPOINTS` in `update.py`, and you can
+print it without running an analysis:
+
+```bash
+deauth-correlator update endpoints
+```
+
+| Host | When | What for |
+| --- | --- | --- |
+| `api.github.com` | each check | the latest release's version number and notes |
+| `github.com` | only when you ask to download | the release asset URLs, which answer with a redirect |
+| `objects.githubusercontent.com` | only when you ask to download | where those redirects lead; the archive bytes |
+| `release-assets.githubusercontent.com` | only when you ask to download | the newer name for the same redirect target |
+
+That list is enforced, not merely documented. `_check_url` rejects any URL outside it, and
+because a release-asset download always redirects, redirects are switched off and walked
+by hand so **every hop** is checked — a redirect to an unlisted host stops the download
+instead of quietly completing it from somewhere else. The session also sets
+`trust_env = False`, so `HTTP_PROXY` cannot route the request somewhere the list does not
+name.
+
+**To turn it off entirely,** clear the "Check for updates when the program starts" box on
+the Case tab, or set `check_for_updates` to `false` in the case file. With it off the
+program contacts nothing but your camera, and the update code never runs.
+
+### Why it never installs by itself
+
+Checking is a read. Installing is not, and it does not happen implicitly.
+
+Every report and every `MANIFEST.json` records the version that produced it. Software
+that replaces itself between an analysis and the question "which version produced this?"
+makes that question unanswerable, and replacing files underneath a running analysis is
+worse. So an update is only ever installed when you say so, and even then:
+
+- the archive is checked against the SHA-256 published with the release before anything
+  is unpacked;
+- the unpacked tree is checked against the `CONTENTS.sha256` inside it before anything is
+  replaced;
+- the previous install is kept alongside the new one, so a bad update can be rolled back;
+- the swap is never performed by the process being replaced.
+
+A verification failure at any of those points aborts and leaves the existing installation
+untouched.
 
 ## Credentials
 
