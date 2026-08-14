@@ -91,6 +91,7 @@ import shlex
 import shutil
 import stat
 import sys
+import tarfile
 import zipfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -413,42 +414,71 @@ class Release:
 def platform_tags(system: str | None = None, machine: str | None = None) -> tuple[str, ...]:
     """The archive name fragments that identify this platform, most exact first.
 
-    ``packaging/build.py`` names archives with ``platform.system().lower()`` and
-    ``platform.machine().lower()``, so those are what has to be matched. The
-    aliases exist because the same processor is called amd64 on Windows and
-    x86_64 on Linux, and arm64 on macOS and aarch64 on Linux, and a release may
-    have been built on either.
+    Both halves need aliases, and for different reasons.
+
+    The processor half, because the same chip is called amd64 on Windows and
+    x86_64 on Linux, and arm64 on macOS but aarch64 on Linux; a release may have
+    been built on either.
+
+    The system half, because the published names do not come from
+    ``platform.system()`` at all. They come from the ``label`` column of the
+    release workflow's build matrix, which says ``macos-arm64`` where
+    ``platform.system().lower()`` says ``darwin``. Matching on ``darwin`` alone
+    finds nothing on the one platform whose archive is a bundle, which is the
+    platform that most needs the archive rather than a rebuild.
     """
     system = (system or platform.system()).lower()
     machine = (machine or platform.machine()).lower()
-    aliases = {
+    machines = {
         "amd64": ("amd64", "x86_64", "x64"),
         "x86_64": ("x86_64", "amd64", "x64"),
         "x64": ("x64", "amd64", "x86_64"),
         "arm64": ("arm64", "aarch64"),
         "aarch64": ("aarch64", "arm64"),
     }
-    return tuple(f"{system}-{name}" for name in aliases.get(machine, (machine,)))
+    systems = {
+        "darwin": ("macos", "darwin", "osx"),
+        "macos": ("macos", "darwin", "osx"),
+    }
+    return tuple(f"{os_name}-{arch}"
+                 for os_name in systems.get(system, (system,))
+                 for arch in machines.get(machine, (machine,)))
 
 
 def select_asset(assets: list, version: str, system: str | None = None,
                  machine: str | None = None) -> dict | None:
     """Pick the release asset built for this platform, or None if there is none.
 
-    The macOS archive is the ``.app`` bundle and its name ends ``-app.zip``. On
-    every other platform that suffix marks an archive that must not be offered,
-    so it is excluded rather than merely not preferred.
+    The archive kind differs by platform and that is deliberate, so matching on
+    ".zip" alone would find nothing on two platforms out of three. Windows is
+    published as a zip because Windows opens one with no extra tooling; macOS
+    and Linux are published as a gzipped tar, because a zip written by Python
+    restores neither the executable bit nor the symbolic links inside an .app
+    bundle. A locally built macOS bundle archived with ``ditto`` is a zip whose
+    name ends "-app.zip", and that is accepted on macOS as well.
+
+    The source distribution and the wheel are published under the same
+    ``deauth-correlator`` prefix and must never be offered as a standalone
+    build, so a candidate has to name this platform to be considered at all.
     """
     system = (system or platform.system()).lower()
-    app_suffix = system == "darwin"
     tags = platform_tags(system, machine)
     by_name = {str(asset.get("name") or ""): asset for asset in assets
                if isinstance(asset, dict)}
 
+    def acceptable(lowered: str) -> bool:
+        if system == "darwin":
+            return lowered.endswith((".tar.gz", ".tgz", "-app.zip"))
+        if system == "windows":
+            return lowered.endswith(".zip") and not lowered.endswith("-app.zip")
+        return lowered.endswith((".tar.gz", ".tgz"))
+
+    suffixes = ("-app.zip", ".zip", ".tar.gz", ".tgz")
     for tag in tags:
-        exact = f"{DIST_NAME}-{version}-{tag}{'-app.zip' if app_suffix else '.zip'}"
-        if exact in by_name:
-            return by_name[exact]
+        for suffix in suffixes:
+            exact = f"{DIST_NAME}-{version}-{tag}{suffix}"
+            if exact in by_name and acceptable(exact.lower()):
+                return by_name[exact]
 
     # A release whose file names do not carry the version exactly as the tag
     # does. Still required to name this platform and this kind of archive.
@@ -457,10 +487,7 @@ def select_asset(assets: list, version: str, system: str | None = None,
             lowered = name.lower()
             if not lowered.startswith(f"{DIST_NAME}-") or tag not in lowered:
                 continue
-            if app_suffix and lowered.endswith("-app.zip"):
-                return asset
-            if not app_suffix and lowered.endswith(".zip") \
-                    and not lowered.endswith("-app.zip"):
+            if acceptable(lowered):
                 return asset
     return None
 
@@ -769,7 +796,7 @@ def stage_update(release: Release, archive: str | os.PathLike,
 
     extract_dir = container / "extract"
     try:
-        _extract_zip(archive, extract_dir)
+        _extract(archive, extract_dir)
         found = _locate_tree(extract_dir)
         tree = container / "new"
         os.replace(found, tree)
@@ -916,6 +943,100 @@ def _unique_sibling(root: Path, label: str) -> Path:
 # Extraction
 # --------------------------------------------------------------------------
 
+def _extract(archive: Path, into: Path) -> None:
+    """Unpack a release archive of either kind this project publishes.
+
+    Windows gets a zip because Windows opens one without extra tooling. macOS
+    and Linux get a gzipped tar, because a zip written by Python restores
+    neither the executable bit nor the symbolic links inside an .app bundle,
+    and a build missing either does not run.
+    """
+    if _is_tarball(archive.name):
+        _extract_tar(archive, into)
+    else:
+        _extract_zip(archive, into)
+
+
+def _is_tarball(name: str) -> bool:
+    return name.lower().endswith((".tar.gz", ".tgz"))
+
+
+def _extract_tar(archive: Path, into: Path) -> None:
+    """Extract a gzipped tar, refusing anything that would write outside ``into``.
+
+    Deliberately not ``extractall``, for the same reason as the zip: its "data"
+    filter neutralises a hostile member quietly, and an archive that tries one
+    is a reason to stop rather than something to work around. A tar can also
+    carry things a zip cannot - hard links, devices, setuid bits - none of which
+    belong in a release, so each is refused by name rather than ignored.
+    """
+    into.mkdir(parents=True, exist_ok=True)
+    try:
+        handle = tarfile.open(archive, "r:gz")
+    except (tarfile.TarError, OSError) as exc:
+        raise UpdateStagingError(
+            f"{archive.name} is not a readable gzipped tar archive: {exc}") from exc
+
+    with handle as tf:
+        members = tf.getmembers()
+        total = 0
+        for member in members:
+            if _ignored_member(member.name):
+                continue
+            _safe_parts(member.name, archive.name)
+            if member.islnk() or member.ischr() or member.isblk() \
+                    or member.isfifo() or member.isdev():
+                raise UpdateStagingError(
+                    f"{archive.name} contains {member.name!r}, which is a hard "
+                    f"link or a device node. A release archive holds files, "
+                    f"directories and symbolic links and nothing else. Nothing "
+                    f"has been extracted.")
+            if member.mode & (stat.S_ISUID | stat.S_ISGID):
+                raise UpdateStagingError(
+                    f"{archive.name} contains {member.name!r}, which is marked "
+                    f"setuid or setgid. Nothing has been extracted.")
+            total += member.size
+        if total > MAX_EXTRACTED_BYTES:
+            raise UpdateStagingError(
+                f"{archive.name} expands to {_human(total)}, past the "
+                f"{_human(MAX_EXTRACTED_BYTES)} this will unpack. Extract it "
+                f"yourself if that is genuinely what the release contains.")
+
+        into_real = into.resolve()
+        for member in members:
+            if _ignored_member(member.name):
+                continue
+            parts = _safe_parts(member.name, archive.name)
+            target = _contained(into.joinpath(*parts), into_real,
+                                member.name, archive.name)
+            try:
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+
+                if member.issym():
+                    _place_symlink(member.linkname, target, into_real,
+                                   member.name, archive.name)
+                    continue
+                source = tf.extractfile(member)
+                if source is None:
+                    raise UpdateStagingError(
+                        f"{archive.name} contains {member.name!r}, which the tar "
+                        f"reader cannot open. Nothing has been installed.")
+                with source, open(target, "wb") as sink:
+                    shutil.copyfileobj(source, sink, CHUNK)
+            except OSError as exc:
+                raise UpdateStagingError(
+                    f"{archive.name} contains a member that could not be written "
+                    f"({member.name!r}): {exc}. Nothing has been installed.") from exc
+            if os.name != "nt" and member.mode & 0o777:
+                try:
+                    os.chmod(target, member.mode & 0o777)
+                except OSError:
+                    pass
+
+
 def _extract_zip(archive: Path, into: Path) -> None:
     """Extract a zip, refusing anything that would write outside ``into``.
 
@@ -1050,9 +1171,15 @@ def _write_symlink(zf: zipfile.ZipFile, info: zipfile.ZipInfo, target: Path,
     text will not launch.
     """
     destination = zf.read(info).decode("utf-8", errors="replace")
+    _place_symlink(destination, target, into_real, info.filename, archive_name)
+
+
+def _place_symlink(destination: str, target: Path, into_real: Path,
+                   name: str, archive_name: str) -> None:
+    """Create one symbolic link, having checked it points inside the tree."""
     if not destination:
         raise UpdateStagingError(
-            f"{archive_name} contains an empty symbolic link at {info.filename!r}.")
+            f"{archive_name} contains an empty symbolic link at {name!r}.")
     # The link text is resolved against where the link's directory *really* is,
     # not against the path the member happens to spell. Those two diverge as
     # soon as an earlier member of the same archive is a link that shortens the
@@ -1066,13 +1193,13 @@ def _write_symlink(zf: zipfile.ZipFile, info: zipfile.ZipInfo, target: Path,
             or not resolved.is_relative_to(into_real)):
         raise UpdateStagingError(
             f"{archive_name} contains a symbolic link pointing outside the "
-            f"extracted tree ({info.filename!r} -> {destination!r}). Nothing has "
+            f"extracted tree ({name!r} -> {destination!r}). Nothing has "
             f"been installed.")
     try:
         os.symlink(destination, target)
     except OSError as exc:
         raise UpdateStagingError(
-            f"could not recreate the symbolic link {info.filename!r} that the "
+            f"could not recreate the symbolic link {name!r} that the "
             f"archive contains: {exc}. On Windows this needs Developer Mode or "
             f"an elevated prompt; on macOS and Linux it should not happen.") from exc
 

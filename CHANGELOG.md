@@ -57,7 +57,7 @@ bottom of this entry, and all nine are fixed here.
 - **Thirty new self-test checks**, covering exactly the refusals the two new modules are
   responsible for: the host allow-list, six kinds of archive member that would escape the
   extraction directory, symbolic links that point out of the tree, and credential
-  redaction. `--self-test` now runs 180 checks, or 173 without the optional dependencies.
+  redaction. `--self-test` now runs 190 checks, or 183 without the optional dependencies.
 
 ### Fixed
 
@@ -116,6 +116,21 @@ checkable offline.
   re-enabled the Start button unconditionally and overwrote the install instructions with
   "Stopped.", leaving a machine without OpenCV showing a live-looking button and no
   explanation of why it would not work.
+
+Two more found while checking the update path against what the release workflow actually
+publishes, rather than against what the code assumed it published:
+
+- **`update install` could not have worked on macOS or Linux.** It looked for a `.zip`,
+  but those platforms are published as `.tar.gz` — deliberately, because a zip written by
+  Python restores neither the executable bit nor the symbolic links inside an `.app`
+  bundle. Tar archives are now accepted and are held to exactly the same rules as a zip,
+  plus two that only a tar can break: hard links and device nodes are refused, and so is
+  a member marked setuid or setgid.
+
+- **macOS would not have been recognised even once the archive kind was right.** The
+  platform tag was derived from `platform.system()`, which returns `darwin`, while the
+  published archive is labelled `macos-arm64` — that label comes from the release
+  workflow's build matrix, not from Python. Both names are now matched.
 
 ### Changed
 

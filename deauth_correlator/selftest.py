@@ -1455,6 +1455,86 @@ def _test_update_and_liveview(check: Check, directory: Path) -> None:
     check.equal(extracted, sorted(contents),
                 "a legitimate archive extracts with every file where it belongs")
 
+    # -- the right archive is offered on each platform ----------------------
+    # These are the names the release workflow actually publishes. The archive
+    # kind differs by platform on purpose - a zip written by Python restores
+    # neither the executable bit nor the symbolic links in an .app bundle - and
+    # the macOS label comes from the workflow's build matrix, not from
+    # platform.system(), which says "darwin" instead.
+    published = [{"name": n} for n in (
+        "deauth-correlator-9.9.9-linux-x86_64.tar.gz",
+        "deauth-correlator-9.9.9-macos-arm64.tar.gz",
+        "deauth-correlator-9.9.9-windows-x86_64.zip",
+        "deauth_correlator-9.9.9-py3-none-any.whl",
+        "deauth_correlator-9.9.9.tar.gz",
+        "SHA256SUMS.txt")]
+    for system, machine, expected in (
+            ("Windows", "AMD64", "deauth-correlator-9.9.9-windows-x86_64.zip"),
+            ("Darwin", "arm64", "deauth-correlator-9.9.9-macos-arm64.tar.gz"),
+            ("Linux", "x86_64", "deauth-correlator-9.9.9-linux-x86_64.tar.gz")):
+        chosen = updater.select_asset(published, "9.9.9", system=system,
+                                      machine=machine)
+        check.equal(chosen and chosen["name"], expected,
+                    f"{system} is offered the archive built for it")
+    check.that(
+        updater.select_asset(published, "9.9.9", system="Linux",
+                             machine="riscv64") is None,
+        "a platform with no build in the release is offered nothing at all")
+    # The source distribution is a .tar.gz under the same prefix, so a selector
+    # matching on suffix alone would hand a Linux user the sources to install.
+    check.that(
+        updater.select_asset([{"name": "deauth_correlator-9.9.9.tar.gz"}], "9.9.9",
+                             system="Linux", machine="x86_64") is None,
+        "the source distribution is never offered as a standalone build")
+
+    # -- a tarball is held to the same rules as a zip -----------------------
+    import io
+    import tarfile
+
+    def _tar(name: str, entries) -> Path:
+        path = directory / name
+        with tarfile.open(path, "w:gz") as tf:
+            for member_name, kind, payload in entries:
+                info = tarfile.TarInfo(member_name)
+                if kind == "file":
+                    raw = payload.encode()
+                    info.size = len(raw)
+                    tf.addfile(info, io.BytesIO(raw))
+                else:
+                    info.type = (tarfile.SYMTYPE if kind == "sym"
+                                 else tarfile.LNKTYPE)
+                    info.linkname = payload
+                    tf.addfile(info)
+        return path
+
+    tar_cases = [
+        ("tar-traversal.tar.gz", [("../evil.txt", "file", "x")],
+         "a tar member that climbs out of the tree"),
+        ("tar-drive.tar.gz", [("a/b/Z:/evil.dll", "file", "x")],
+         "a tar member with a drive letter after the first component"),
+        ("tar-symlink.tar.gz", [("a/out", "sym", "../../../../etc/passwd")],
+         "a tar symbolic link pointing outside the tree"),
+        ("tar-hardlink.tar.gz", [("a/ok", "file", "x"), ("a/hard", "link", "a/ok")],
+         "a hard link, which no release archive has any reason to contain"),
+    ]
+    for name, entries, why in tar_cases:
+        try:
+            updater._extract(_tar(name, entries), directory / (name + "-out"))
+            check.that(False, why + " is refused")
+        except updater.UpdateStagingError:
+            check.that(True, why + " is refused")
+
+    good_tar = _tar("tar-good.tar.gz",
+                    [("deauth-correlator/CONTENTS.sha256", "file", "manifest"),
+                     ("deauth-correlator/deauth-correlator", "file", "exe")])
+    tar_out = directory / "tar-good-out"
+    updater._extract(good_tar, tar_out)
+    check.equal(sorted(str(p.relative_to(tar_out)).replace("\\", "/")
+                       for p in tar_out.rglob("*") if p.is_file()),
+                ["deauth-correlator/CONTENTS.sha256",
+                 "deauth-correlator/deauth-correlator"],
+                "a legitimate tarball extracts with every file where it belongs")
+
     # -- an update is never installed as a side effect of checking ----------
     check.that(not any(
         name in updater.check_for_update.__code__.co_names

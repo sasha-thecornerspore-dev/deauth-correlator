@@ -95,9 +95,9 @@ python -m deauth_correlator --self-test
 
 That generates synthetic evidence for every supported format, runs the whole pipeline
 over it twice — once with a planted correlation, once with independent random data —
-and checks that the first is found and the second is not. All 180 checks should pass.
+and checks that the first is found and the second is not. All 190 checks should pass.
 
-A base install without the optional extras runs 173 and reports the camera checks as
+A base install without the optional extras runs 183 and reports the camera checks as
 skipped, because those need `requests`. Either count is a pass; a failure names the
 check that failed.
 
