@@ -61,6 +61,15 @@ class AppConfig:
     evidence_bundle: bool = False
     zip_bundle: bool = False
 
+    # Firewall log fetching. The API secret is never persisted, for the same
+    # reason the camera password is not: a case file is something you hand to
+    # someone else.
+    firewall_host: str = ""
+    firewall_key: str = ""
+    firewall_tls_mode: str = "verify"      # verify | pin | insecure
+    firewall_fingerprint: str = ""
+    firewall_margin_h: float = 2.0
+
     # Camera (credentials are never persisted)
     camera_host: str = ""
     camera_user: str = ""
@@ -92,6 +101,7 @@ class AppConfig:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = asdict(self)
         data.pop("camera_password", None)
+        data.pop("firewall_secret", None)
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         return path
 

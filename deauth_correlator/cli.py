@@ -52,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
         return _camera_command(argv[1:])
     if argv and argv[0] == "update":
         return _update_command(argv[1:])
+    if argv and argv[0] == "fetch":
+        return _fetch_command(argv[1:])
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -527,6 +529,225 @@ def _update_command(argv: list[str]) -> int:
     return 0
 
 
+def _fetch_command(argv: list[str]) -> int:
+    """Pull the firewall logs that bear on a set of camera events.
+
+    The window comes from the camera events unless you override it, because the
+    camera events are the part only you can produce and the logs are the part
+    the firewall already has. Everything retrieved is written into one directory
+    with a provenance envelope, and can be handed straight back in as
+    --opnsense-log.
+    """
+    from .firewall import (FirewallConfig, FirewallError, LOG_SOURCES,
+                           discover_sources, fetch_logs, window_from_events)
+    from .firewall.opnsense_api import OpnsenseClient, certificate_fingerprint
+
+    parser = argparse.ArgumentParser(
+        prog="deauth-correlator fetch",
+        description="Read DHCP and system logs straight off an OPNsense firewall, "
+                    "for the period your camera events cover.",
+        epilog="The API secret is read from DEAUTH_CORRELATOR_OPNSENSE_SECRET if "
+               "set, so it need not appear in shell history. Create a key under "
+               "System > Access > Users > (your user) > API keys; it downloads as "
+               "a text file holding both halves. This only ever reads.")
+    parser.add_argument("action", nargs="?", default="logs",
+                        choices=("logs", "probe", "fingerprint", "sources"),
+                        help="logs: fetch them (default). probe: check the "
+                             "connection and credentials. fingerprint: print the "
+                             "certificate fingerprint so it can be pinned. "
+                             "sources: list which logs this firewall has.")
+    parser.add_argument("--firewall-host", default="", metavar="HOST")
+    parser.add_argument("--firewall-port", type=int, default=443)
+    parser.add_argument("--firewall-key", default="", metavar="KEY")
+    parser.add_argument("--firewall-secret", default=None, metavar="SECRET",
+                        help="Prefer DEAUTH_CORRELATOR_OPNSENSE_SECRET.")
+    parser.add_argument("--firewall-ca", default="", metavar="FILE",
+                        help="PEM bundle to verify the firewall against. This is "
+                             "the right answer for a self-signed certificate: "
+                             "export the CA from System > Trust > Authorities.")
+    parser.add_argument("--firewall-fingerprint", default="", metavar="SHA256",
+                        help="Pin the certificate instead of trusting a CA. Get "
+                             "the value with the 'fingerprint' action and check "
+                             "it against the firewall's own web interface.")
+    parser.add_argument("--firewall-insecure", action="store_true",
+                        help="Do not check the certificate at all. Recorded in "
+                             "the output as UNVERIFIED, and every report built "
+                             "from those logs says so.")
+    parser.add_argument("--camera-events", action="append", default=[],
+                        metavar="PATH",
+                        help="Camera events to take the time window from. Repeatable.")
+    parser.add_argument("--since", default="", metavar="WHEN",
+                        help="Override the start, as an ISO 8601 time.")
+    parser.add_argument("--until", default="", metavar="WHEN",
+                        help="Override the end, as an ISO 8601 time.")
+    parser.add_argument("--baseline-margin", type=float, default=None,
+                        metavar="HOURS",
+                        help="How much log to pull either side of the camera "
+                             "events, so the analysis has a period with no events "
+                             "in it to compare against (default: 2).")
+    parser.add_argument("--outdir", default="fetched-logs", metavar="DIR")
+    parser.add_argument("--tz", default=DEFAULT_TZ)
+    parser.add_argument("--timeout", type=float, default=30.0, metavar="SECONDS")
+    args = parser.parse_args(argv)
+
+    print(BANNER)
+    print()
+
+    if not args.firewall_host:
+        print("error: --firewall-host is required.", file=sys.stderr)
+        return 2
+
+    if args.action == "fingerprint":
+        # Deliberately available before any credential is needed.
+        try:
+            digest = certificate_fingerprint(args.firewall_host,
+                                             args.firewall_port, args.timeout)
+        except FirewallError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"{args.firewall_host}:{args.firewall_port} presents")
+        print(f"  {digest}")
+        print()
+        print("Whoever answers gets to state their own fingerprint, so this "
+              "proves nothing on its own.")
+        print("Check it against the firewall's own web interface under "
+              "System > Trust > Certificates,")
+        print("then pass it as --firewall-fingerprint.")
+        return 0
+
+    secret = (args.firewall_secret if args.firewall_secret is not None
+              else os.environ.get("DEAUTH_CORRELATOR_OPNSENSE_SECRET", ""))
+    if not (args.firewall_key and secret):
+        print("error: an API key and secret are required. Create one under "
+              "System > Access > Users > (your user) > API keys, then pass "
+              "--firewall-key and set DEAUTH_CORRELATOR_OPNSENSE_SECRET.",
+              file=sys.stderr)
+        return 2
+
+    verify: bool | str = True
+    if args.firewall_insecure:
+        verify = False
+    elif args.firewall_ca:
+        verify = args.firewall_ca
+
+    config = FirewallConfig(
+        host=args.firewall_host, port=args.firewall_port, key=args.firewall_key,
+        secret=secret, verify=verify, fingerprint=args.firewall_fingerprint,
+        timeout=args.timeout)
+
+    if args.firewall_insecure and not args.firewall_fingerprint:
+        print("WARNING: the certificate will not be checked, so this connection "
+              "does not establish")
+        print("         which machine answered. Every log fetched this way is "
+              "marked UNVERIFIED, and")
+        print("         the analysis repeats that in its warnings. Prefer "
+              "--firewall-ca or --firewall-fingerprint.")
+        print()
+
+    try:
+        if args.action == "probe":
+            with OpnsenseClient(config) as client:
+                identity = client.identify()
+                print(f"Reached {config.host}:{config.port}")
+                print(f"  TLS: {config.tls_description()}")
+                data = identity.get("data") if isinstance(identity, dict) else None
+                versions = (data or {}).get("versions") if isinstance(data, dict) else None
+                if versions:
+                    for line in versions:
+                        print(f"  {line}")
+                print("  The API key was accepted.")
+            return 0
+
+        if args.action == "sources":
+            with OpnsenseClient(config) as client:
+                found = discover_sources(client)
+            print(f"Logs available on {config.host}:")
+            for source in LOG_SOURCES:
+                mark = "yes" if source in found else " no"
+                print(f"  [{mark}] {source.key:<16} {source.label}")
+                for line in _wrap(source.why, 68):
+                    print(f"           {line}")
+            if not found:
+                print()
+                print("None of them answered. Check that the API key's user has "
+                      "access to Diagnostics: Log.")
+                return 1
+            return 0
+
+        since, until = _fetch_window(args)
+        print(f"Window: {since:%Y-%m-%d %H:%M:%S} to {until:%Y-%m-%d %H:%M:%S} UTC")
+        print()
+        result = fetch_logs(config, since, until, args.outdir,
+                            progress=lambda m: print(f"  {m}"))
+    except FirewallError as exc:
+        print(f"\nerror: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"\nerror: {exc}", file=sys.stderr)
+        return 2
+
+    print()
+    print(result.summary())
+    for note in result.skipped:
+        print(f"  skipped: {note}")
+    if not result.written:
+        return 1
+
+    print()
+    print("Hand them to the analysis with:")
+    flags = " ".join(f'--opnsense-log "{p}"' for p in result.written)
+    print(f"  deauth-correlator {flags} --camera-events ...")
+    return 0
+
+
+def _fetch_window(args):
+    """The time window to pull, from explicit flags or from the camera events."""
+    from datetime import datetime, timezone
+
+    from .firewall import window_from_events
+    from .firewall.fetch import DEFAULT_BASELINE_MARGIN_H
+
+    def parse_when(text: str, what: str):
+        try:
+            when = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError(
+                f"{what} is not an ISO 8601 time: {text!r}. Write it like "
+                f"2026-07-14T18:00:00-04:00.") from None
+        if when.tzinfo is None:
+            raise ValueError(
+                f"{what} carries no UTC offset, so it is ambiguous. Write it "
+                f"like 2026-07-14T18:00:00-04:00, or add a Z for UTC.")
+        return when.astimezone(timezone.utc)
+
+    if args.since and args.until:
+        return parse_when(args.since, "--since"), parse_when(args.until, "--until")
+    if args.since or args.until:
+        raise ValueError("--since and --until go together; give both or neither.")
+
+    if not args.camera_events:
+        raise ValueError(
+            "give --camera-events so the window can be taken from them, or set "
+            "--since and --until explicitly.")
+
+    time_ctx = TimeContext(args.tz)
+    times = []
+    for spec in args.camera_events:
+        path = Path(spec).expanduser()
+        if not path.exists():
+            raise ValueError(f"{path}: not found.")
+        ctx = ParseContext(time=time_ctx, options={"clip_time_from": "auto"})
+        rows, _parser = parse_path(path, ctx, "camera-events", None)
+        times.extend(row["ts_utc"] for row in rows
+                     if row.get("ts_utc") is not None)
+    if not times:
+        raise ValueError(
+            "the camera events held no usable timestamps, so there is no window "
+            "to derive. Check them with --list-parsers and a direct run first.")
+    margin = (DEFAULT_BASELINE_MARGIN_H if args.baseline_margin is None
+              else args.baseline_margin)
+    return window_from_events(times, margin)
+
 def _camera_command(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="deauth-correlator camera",
@@ -647,7 +868,8 @@ def _check_runtime() -> int:
         ("SciPy statistics backend", "scipy",
          "optional; without it the exact pure-Python tests are used instead"),
         ("camera ONVIF support", "requests",
-         "the camera probe and the motion recorder"),
+         "the camera probe, the motion recorder, reading logs off the "
+         "firewall, and the update check"),
         ("camera snapshots", "cv2",
          "grabbing a still frame over RTSP, and decoding the live view"),
         ("live view rendering", "PIL.ImageTk",

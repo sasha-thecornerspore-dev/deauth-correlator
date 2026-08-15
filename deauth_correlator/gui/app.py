@@ -235,6 +235,9 @@ class App(ttk.Frame):
         self.camera_list.pack(fill="x", pady=(0, 6))
 
         ttk.Separator(body).pack(fill="x", pady=10)
+        self._build_fetch_block(body)
+
+        ttk.Separator(body).pack(fill="x", pady=10)
         ttk.Label(body, text="Detected formats and file hashes",
                   font=("Segoe UI", 11, "bold")).pack(anchor="w")
         ttk.Label(body, foreground=PALETTE["muted"], wraplength=820, justify="left",
@@ -248,6 +251,226 @@ class App(ttk.Frame):
         frame.pack(fill="both", expand=True)
         ttk.Button(body, text="Re-check attached files",
                    command=self._refresh_evidence_summary).pack(anchor="w", pady=8)
+
+
+    # -- pulling the logs off the firewall -------------------------------
+
+    def _build_fetch_block(self, body) -> None:
+        """Fetch the OPNsense logs instead of exporting them by hand.
+
+        The window is taken from the camera events attached above, so the
+        ordinary way to use this is: attach the camera events, press Fetch. The
+        logs are the part the firewall already has; the camera events are the
+        part only the operator can produce.
+        """
+        ttk.Label(body, text="Pull the logs off the firewall",
+                  font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(body, foreground=PALETTE["muted"], wraplength=820,
+                  justify="left",
+                  text="Reads the DHCP and system logs straight from OPNsense for "
+                       "the period your camera events cover, and attaches them "
+                       "above. This only ever reads - the one API action that "
+                       "would delete a log cannot be reached from here. The API "
+                       "secret is held for this session only and is never written "
+                       "to the case file.").pack(anchor="w", pady=(2, 6))
+
+        grid = ttk.Frame(body)
+        grid.pack(fill="x")
+        left = ttk.Frame(grid)
+        left.pack(side="left", anchor="n")
+        right = ttk.Frame(grid)
+        right.pack(side="left", anchor="n", padx=(24, 0))
+
+        self.fw_host = LabeledEntry(left, "Firewall address", 30,
+                                    value=self.config_model.firewall_host)
+        self.fw_host.pack(anchor="w", pady=3)
+        self.fw_key = LabeledEntry(left, "API key", 30,
+                                   value=self.config_model.firewall_key)
+        self.fw_key.pack(anchor="w", pady=3)
+        self.fw_secret = LabeledEntry(right, "API secret", 30, show="*")
+        self.fw_secret.pack(anchor="w", pady=3)
+        self.fw_margin = LabeledEntry(
+            right, "Baseline margin (hours)", 30,
+            value=f"{self.config_model.firewall_margin_h:g}")
+        self.fw_margin.pack(anchor="w", pady=3)
+
+        tls = ttk.Frame(body)
+        tls.pack(fill="x", pady=(6, 0))
+        self.fw_tls_mode = tk.StringVar(value=self.config_model.firewall_tls_mode)
+        ttk.Label(tls, text="Certificate:", width=22, anchor="w").pack(side="left")
+        for label, value in (("verify normally", "verify"),
+                             ("pin it", "pin"),
+                             ("do not check", "insecure")):
+            ttk.Radiobutton(tls, text=label, value=value,
+                            variable=self.fw_tls_mode,
+                            command=self._fetch_tls_changed).pack(side="left",
+                                                                  padx=(0, 12))
+        self.fw_fingerprint = LabeledEntry(
+            body, "Pinned SHA-256", 64,
+            value=self.config_model.firewall_fingerprint)
+        self.fw_fingerprint.pack(anchor="w", pady=3)
+
+        row = ttk.Frame(body)
+        row.pack(anchor="w", pady=(8, 0))
+        self.fw_fetch_btn = ttk.Button(row, text="Fetch logs for my camera events",
+                                       command=self._fetch_logs)
+        self.fw_fetch_btn.pack(side="left")
+        ttk.Button(row, text="Test connection",
+                   command=self._fetch_probe).pack(side="left", padx=(8, 0))
+        ttk.Button(row, text="Read fingerprint",
+                   command=self._fetch_fingerprint).pack(side="left", padx=(8, 0))
+
+        self.fw_status = tk.StringVar(value="Not connected.")
+        ttk.Label(body, textvariable=self.fw_status, foreground=PALETTE["muted"],
+                  wraplength=820, justify="left").pack(anchor="w", pady=(6, 0))
+        self.fetch_log = LogPane(body, height=7)
+        self.fetch_log.pack(fill="x", pady=(6, 0))
+        self._fetch_tls_changed()
+
+    def _fetch_tls_changed(self) -> None:
+        pinning = self.fw_tls_mode.get() == "pin"
+        self.fw_fingerprint.entry.configure(
+            state="normal" if pinning else "disabled")
+
+    def _firewall_config(self):
+        from ..firewall import FirewallConfig
+
+        mode = self.fw_tls_mode.get()
+        return FirewallConfig(
+            host=self.fw_host.get().strip(),
+            key=self.fw_key.get().strip(),
+            secret=self.fw_secret.get(),
+            verify=False if mode == "insecure" else True,
+            fingerprint=(self.fw_fingerprint.get().strip()
+                         if mode == "pin" else ""))
+
+    def _fetch_fingerprint(self) -> None:
+        from ..firewall.opnsense_api import FirewallError, certificate_fingerprint
+
+        host = self.fw_host.get().strip()
+        if not host:
+            messagebox.showinfo("Firewall address",
+                                "Enter the firewall's address first.")
+            return
+        self.fw_status.set("Reading the certificate \u2026")
+
+        def work():
+            try:
+                self._post("fetch_fingerprint", certificate_fingerprint(host))
+            except FirewallError as exc:
+                self._post("fetch_failed", exc)
+
+        threading.Thread(target=work, name="fw-fingerprint", daemon=True).start()
+
+    def _fetch_probe(self) -> None:
+        from ..firewall import FirewallError
+        from ..firewall.fetch import _product_name
+        from ..firewall.opnsense_api import OpnsenseClient
+
+        config = self._firewall_config()
+        if not config.is_configured():
+            messagebox.showinfo(
+                "Firewall details",
+                "Enter the address, the API key and the API secret.\n\n"
+                "Create a key under System > Access > Users > (your user) > "
+                "API keys. It downloads as a text file holding both halves.")
+            return
+        self.fw_status.set("Connecting \u2026")
+
+        def work():
+            try:
+                with OpnsenseClient(config) as client:
+                    identity = client.identify()
+                self._post("fetch_probed",
+                           f"{_product_name(identity)} at {config.host}. The API "
+                           f"key was accepted. Certificate: "
+                           f"{config.tls_description()}")
+            except FirewallError as exc:
+                self._post("fetch_failed", exc)
+
+        threading.Thread(target=work, name="fw-probe", daemon=True).start()
+
+    def _fetch_logs(self) -> None:
+        from ..firewall import FirewallError, fetch_logs, window_from_events
+
+        config = self._firewall_config()
+        if not config.is_configured():
+            messagebox.showinfo(
+                "Firewall details",
+                "Enter the address, the API key and the API secret first.")
+            return
+
+        app_config = self._collect_config()
+        if not app_config.camera_events:
+            messagebox.showinfo(
+                "Camera events first",
+                "Attach the camera events above before fetching.\n\n"
+                "They decide which stretch of log matters: the tool pulls the "
+                "period they cover plus a margin either side, so the analysis "
+                "has a quiet period to compare against.")
+            return
+        if config.verify is False and not config.fingerprint:
+            if not messagebox.askokcancel(
+                    "Certificate will not be checked",
+                    "With 'do not check' selected, this connection does not "
+                    "establish which machine answered.\n\n"
+                    "Every log fetched this way is marked UNVERIFIED inside the "
+                    "file, and the analysis repeats that in its warnings. "
+                    "Continue?"):
+                return
+        try:
+            margin = float(self.fw_margin.get() or 2.0)
+        except ValueError:
+            messagebox.showerror("Baseline margin",
+                                 "The baseline margin must be a number of hours.")
+            return
+
+        self.fw_fetch_btn.configure(state="disabled")
+        self.fw_status.set("Working out the window \u2026")
+        self.fetch_log.clear()
+        self._busy("Fetching logs from the firewall \u2026")
+        outdir = str(Path(app_config.outdir or "output") / "fetched-logs")
+
+        def work():
+            try:
+                times = self._camera_event_times(app_config)
+                since, until = window_from_events(times, margin)
+                self._post("fetch_progress",
+                           f"Window {since:%Y-%m-%d %H:%M} to "
+                           f"{until:%Y-%m-%d %H:%M} UTC")
+                result = fetch_logs(
+                    config, since, until, outdir,
+                    progress=lambda m: self._post("fetch_progress", m))
+                self._post("fetch_done", result)
+            except Exception as exc:                       # noqa: BLE001
+                self._post("fetch_failed", exc)
+
+        threading.Thread(target=work, name="fw-fetch", daemon=True).start()
+
+    def _camera_event_times(self, app_config):
+        """Timestamps of every attached camera event, for the fetch window.
+
+        Read through the same parsers and the same time context the analysis
+        would use, so the window is expressed in the same terms as the answer.
+        """
+        from ..parsers import ParseContext, parse_path
+        from ..timeutil import TimeContext
+
+        time_ctx = TimeContext(app_config.timezone, app_config.log_year,
+                               app_config.assume_offset or None)
+        times = []
+        for raw in app_config.camera_events:
+            path = Path(raw).expanduser()
+            if not path.exists():
+                continue
+            ctx = ParseContext(
+                time=time_ctx,
+                clock_offset_s=app_config.camera_clock_offset_s,
+                options={"clip_time_from": app_config.clip_time_from})
+            rows, _parser = parse_path(path, ctx, "camera-events", None)
+            times.extend(row["ts_utc"] for row in rows
+                         if row.get("ts_utc") is not None)
+        return times
 
     # -- tab 3: camera ---------------------------------------------------
 
@@ -983,6 +1206,41 @@ class App(ttk.Frame):
             self.update_install_btn.configure(state="normal")
             self.update_status.set("Update staged and verified.")
             messagebox.showinfo("Update ready to finish", str(payload))
+        elif kind == "fetch_fingerprint":
+            self.fw_fingerprint.set(payload)
+            self.fw_tls_mode.set("pin")
+            self._fetch_tls_changed()
+            self.fw_status.set(
+                "Pinned. Check that value against the firewall's own web "
+                "interface under System > Trust > Certificates - whoever answers "
+                "gets to state their own fingerprint, so reading it proves "
+                "nothing on its own.")
+            self.fetch_log.write(f"Certificate fingerprint: {payload}", "muted")
+        elif kind == "fetch_probed":
+            self.fw_status.set(payload)
+            self.fetch_log.write(payload, "ok")
+        elif kind == "fetch_progress":
+            self.fw_status.set(payload)
+            self.fetch_log.write(payload, "muted")
+        elif kind == "fetch_done":
+            self._idle()
+            self.fw_fetch_btn.configure(state="normal")
+            self.fw_status.set(payload.summary())
+            self.fetch_log.write(payload.summary(),
+                                 "ok" if payload.written else "muted")
+            for note in payload.skipped:
+                self.fetch_log.write(f"skipped: {note}", "muted")
+            if payload.written:
+                existing = self.opnsense_list.paths()
+                fresh = [str(p) for p in payload.written
+                         if str(p) not in existing]
+                self.opnsense_list.set_paths(existing + fresh)
+                self._refresh_evidence_summary()
+        elif kind == "fetch_failed":
+            self._idle()
+            self.fw_fetch_btn.configure(state="normal")
+            self.fw_status.set(str(payload))
+            self.fetch_log.write(f"{payload}", "error")
         elif kind == "update_failed":
             self._idle()
             exc, quiet = payload

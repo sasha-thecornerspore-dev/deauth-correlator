@@ -85,14 +85,14 @@ clip files — and runs the entire pipeline over it twice. The run ends like thi
 
 ```
 ============================================================
-SELF-TEST PASSED: all 195 checks passed.
+SELF-TEST PASSED: all 230 checks passed.
 ```
 
 It exits 0 when everything passes and 1 when anything fails, so it can go in a script.
-A base install without the optional extras reports 188 instead, skipping the camera
+A base install without the optional extras reports 223 instead, skipping the camera
 checks, which need `requests`. Both are passes.
 
-The 195 checks are grouped into eleven sections, and it is worth knowing what each one is
+The 230 checks are grouped into twelve sections, and it is worth knowing what each one is
 defending:
 
 | Section | What it proves |
@@ -108,6 +108,7 @@ defending:
 | 9. No fabrication | DHCP retransmission backoff, routine lease renewals, repeated DHCPINFORM from a static host and an already-logged disconnection are not counted as client drops; a protected (802.11w) frame yields no reason code rather than ciphertext read as one; a p-value is never printed as exactly zero |
 | 10. Read-only and chain-of-custody guarantees | The promises `SAFETY.md` makes hold: the ONVIF session ignores proxy environment variables and refuses redirects, so the camera credential header cannot reach a third party; the motion recorder creates no subscription once stopped and gives up rather than retrying for ever; an input file is hashed before it is parsed; and a build whose graphical interface is dead is detectable |
 | 11. Updating and live view | The two subsystems that reach outside a file the operator named refuse what they should: the update check will not contact a host outside its allow-list, however the URL is dressed up; an archive whose members would land outside the directory it is extracted into is refused before a byte is written, including one using a drive letter or a symbolic link to get there; and camera credentials are stripped from anything heading for the screen without damaging the message around them |
+| 12. Reading logs off the firewall | The log fetcher cannot write to the firewall: the OPNsense log API's `clear` action, reboots, firmware upgrades, rule changes, service restarts and lease deletions are each attempted and each refused. The API secret cannot reach any host but the one configured, over anything but HTTPS. The fetch window is the camera events widened by the baseline margin, and an empty or absurdly wide set of events refuses rather than guessing. A log fetched from the firewall produces exactly the events the same lines exported by hand would, and an unverified or truncated fetch says so in the analysis warnings |
 
 Section 5 matters more than section 4. A correlator that always finds a correlation is
 worthless as evidence, and the value of the whole exercise rests on the tool being
@@ -139,7 +140,7 @@ deauth-correlator <version> - self-test
 
 Fixtures: /home/you/fixtures
 ...
-SELF-TEST PASSED: all 195 checks passed.
+SELF-TEST PASSED: all 230 checks passed.
 Fixtures kept in /home/you/fixtures
 ```
 

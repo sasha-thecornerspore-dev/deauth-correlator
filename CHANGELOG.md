@@ -7,6 +7,80 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Because
 output of this tool is used as evidence, any change to how a verdict is reached will be
 listed explicitly, with the direction of its effect stated.
 
+## [1.2.0] - 2026-08-15
+
+You should not have to go and find the logs. Attach the camera events, press one button,
+and the firewall's own DHCP and system logs for that period are pulled, hashed and
+attached for you.
+
+### Added
+
+- **`deauth-correlator fetch`** reads the DHCP and system logs straight off an OPNsense
+  firewall, for the period your camera events cover. There is a matching block on the
+  Evidence tab of the graphical interface: fill in the address and API key, press
+  **Fetch logs for my camera events**, and the results are attached to the analysis
+  where you would otherwise have dropped an exported file.
+
+  ```bash
+  export DEAUTH_CORRELATOR_OPNSENSE_SECRET='...'
+  deauth-correlator fetch --firewall-host 192.168.1.1 --firewall-key KEY \
+                          --camera-events passes.csv
+  ```
+
+  Create the API key under System > Access > Users > (your user) > API keys; it
+  downloads as a text file holding both halves. `fetch probe` checks the connection,
+  `fetch sources` lists which logs your firewall actually has, and `fetch fingerprint`
+  prints the certificate so it can be pinned.
+
+- **The time window is derived, not guessed.** It comes from the camera events
+  themselves — the span they cover, widened by a baseline margin (2 hours by default).
+  The margin is not decoration: every statistic in this tool compares the disruption
+  rate inside the event windows against the rate outside them, so a log covering only
+  the events has no outside and would produce the most flattering possible answer. A
+  request with no camera events, or spanning more than a month, is refused rather than
+  guessed at.
+
+- **The fetch cannot write to the firewall, by construction.** OPNsense exposes its logs
+  through one controller with four actions, and one of them — `clear` — empties the log
+  it is pointed at. Rather than avoid it, every request URL is matched against a pattern
+  that cannot express it, checked before the request and again on every redirect hop,
+  with the module and scope components separately restricted so neither can smuggle in a
+  `/` or a `..`. [SAFETY.md](SAFETY.md#reading-logs-off-the-firewall) sets out the whole
+  arrangement. The self-test tries to empty both logs, reboot the box, upgrade its
+  firmware, add a firewall rule, restart a service and delete a DHCP lease, and requires
+  every one to be refused.
+
+- **Which machine answered is recorded, not assumed.** An OPNsense box normally presents
+  a self-signed certificate, so you can trust its CA (`--firewall-ca`), pin the
+  certificate (`--firewall-fingerprint`, checked on every connection), or skip the check
+  (`--firewall-insecure`). Whichever you choose is written into every fetched file, and
+  a log fetched with no check carries `UNVERIFIED` in those words — with the analysis
+  repeating the point in its warnings, because the file then records where the entries
+  were *said* to come from rather than establishing it.
+
+- **A parser for fetched logs** (`opnsense_api`). The rows are saved exactly as the
+  firewall returned them, inside an envelope recording the firewall, the endpoint, the
+  time window and the kind of connection. Nothing is reformatted into a log file the
+  firewall never wrote — hashing and swearing to a file you synthesised would defeat the
+  point of hashing it. What a log line *means* is not duplicated: which messages count
+  as a client drop is still decided in one place, and both parsers call into it. The
+  self-test asserts that a fetched log and the same lines exported by hand produce
+  identical events.
+
+- **Thirty-five new self-test checks** covering all of the above. `--self-test` now runs
+  230 checks, or 223 without the optional dependencies.
+
+### Changed
+
+- The API secret is held for the session only. It is never written to the case file, and
+  there is no field for it in the case file format at all — the same treatment the
+  camera password gets. `DEAUTH_CORRELATOR_OPNSENSE_SECRET` keeps it out of shell
+  history.
+- `--check-runtime` now notes that `requests` also covers reading logs off the firewall.
+- [SAFETY.md](SAFETY.md) gains a "Reading logs off the firewall" section and three new
+  rows in its audit table. The grep counts it quotes are updated: thirty-three lines
+  across the four greps, describing twelve distinct things.
+
 ## [1.1.1] - 2026-08-14
 
 A fix for 1.1.0, released the same day. `update install` did not work at all.

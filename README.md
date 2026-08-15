@@ -25,13 +25,14 @@ background rate).
 4. [Setting up a monitor-mode adapter and running airodump-ng](#a-setting-up-a-monitor-mode-adapter-and-running-airodump-ng)
 5. [Exporting OPNsense logs](#b-exporting-opnsense-logs)
 6. [TP-Link Tapo C100 setup](#c-tp-link-tapo-c100-setup)
-7. [Keeping it up to date](#keeping-it-up-to-date)
-8. [Input formats](#input-formats)
-9. [Outputs](#outputs)
-10. [How the statistics work](#how-the-statistics-work)
-11. [Command reference](#command-reference)
-12. [Getting the evidence right](#getting-the-evidence-right)
-13. [Troubleshooting](#troubleshooting)
+7. [Pulling the logs off the firewall](#pulling-the-logs-off-the-firewall)
+8. [Keeping it up to date](#keeping-it-up-to-date)
+9. [Input formats](#input-formats)
+10. [Outputs](#outputs)
+11. [How the statistics work](#how-the-statistics-work)
+12. [Command reference](#command-reference)
+13. [Getting the evidence right](#getting-the-evidence-right)
+14. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -95,9 +96,9 @@ python -m deauth_correlator --self-test
 
 That generates synthetic evidence for every supported format, runs the whole pipeline
 over it twice — once with a planted correlation, once with independent random data —
-and checks that the first is found and the second is not. All 195 checks should pass.
+and checks that the first is found and the second is not. All 230 checks should pass.
 
-A base install without the optional extras runs 188 and reports the camera checks as
+A base install without the optional extras runs 223 and reports the camera checks as
 skipped, because those need `requests`. Either count is a pass; a failure names the
 check that failed.
 
@@ -131,7 +132,7 @@ Six tabs, in the order the work actually happens:
 | Tab | What it does |
 | --- | --- |
 | **1. Case** | Case number, operator, agency, timezone, camera clock offset. Save and reload a case file so a run can be reproduced later. Also where update checking is switched on or off. |
-| **2. Evidence** | Attach logs, captures and camera events. Each file is hashed and its format detected the moment you add it, so the chain of custody starts before any analysis. |
+| **2. Evidence** | Attach logs, captures and camera events, or pull the firewall's logs straight off OPNsense for the period your camera events cover. Each file is hashed and its format detected the moment you add it, so the chain of custody starts before any analysis. |
 | **3. Camera** | Connect to the Tapo C100, watch the live stream, measure its clock error, save snapshots and single frames as exhibits, and record live motion events straight into a camera-event CSV. |
 | **4. Analyze** | Every analysis parameter, with the reason each one matters, and the run button. |
 | **5. Results** | Verdict banner, per-event table, all the statistics, deauth sources, and the timeline. |
@@ -452,6 +453,71 @@ Nothing is configured, changed or deleted.
 
 ---
 
+## Pulling the logs off the firewall
+
+Section (b) above describes exporting the OPNsense logs by hand. You do not have to.
+
+```bash
+export DEAUTH_CORRELATOR_OPNSENSE_SECRET='your-api-secret'
+deauth-correlator fetch \
+  --firewall-host 192.168.1.1 --firewall-key YOUR_API_KEY \
+  --camera-events passes.csv --outdir case0714/fetched-logs
+```
+
+That reads the DHCP and system logs for exactly the period your camera events cover,
+writes them into `--outdir`, and prints the command to hand them to the analysis. In the
+graphical interface the same thing is a block on the **Evidence** tab: fill in the
+address and key, press **Fetch logs for my camera events**, and the results attach
+themselves.
+
+### Getting an API key
+
+**System > Access > Users**, edit your user, and under **API keys** press **+**. It
+downloads a text file with two lines — the key and the secret. The secret is shown once.
+
+The user needs access to **Diagnostics: Log**. A read-only account is enough, and is what
+you want: this tool never writes to the firewall.
+
+### The window comes from your camera events
+
+The stretch of log pulled is the span your camera events cover, widened by a **baseline
+margin** — two hours each side by default, `--baseline-margin` to change it.
+
+That margin is the point, not padding. Every statistic here compares how often wireless
+disruptions happen *inside* the camera-event windows against how often they happen
+*outside* them. A log that covers only the events has no outside, so there is nothing to
+compare against and the answer would come out as favourable as it possibly could. If you
+would rather be explicit, pass `--since` and `--until` instead.
+
+### Checking the certificate
+
+An OPNsense box normally presents a self-signed certificate. Three options, and the one
+you pick is recorded in every file fetched:
+
+```bash
+deauth-correlator fetch fingerprint --firewall-host 192.168.1.1
+```
+
+| Option | What it means |
+| --- | --- |
+| `--firewall-ca FILE` | Verify against the firewall's CA. Export it from **System > Trust > Authorities**. The cleanest answer. |
+| `--firewall-fingerprint SHA256:…` | Pin the certificate. Checked on every connection. Read it with the command above, then **confirm it against the firewall's own web interface** before trusting it — whoever answers gets to state their own fingerprint. |
+| `--firewall-insecure` | No check. The fetched logs are marked `UNVERIFIED`, and every analysis that reads them says so in its warnings. |
+
+### What it will and will not do
+
+It reads. The OPNsense log API has an action that **empties** a log, and this tool is
+built so that it cannot reach it: request paths are matched against a pattern that
+cannot express it, before the request and on every redirect. Nothing else on the
+firewall — rules, services, leases, firmware — is reachable either. See
+[SAFETY.md](SAFETY.md#reading-logs-off-the-firewall), and note that the self-test
+actively tries each of those calls and requires them to be refused.
+
+Other commands: `fetch probe` tests the connection and credentials, `fetch sources`
+lists which logs your firewall has.
+
+---
+
 ## Keeping it up to date
 
 The program asks GitHub whether a newer release exists — once at startup, and whenever
@@ -607,6 +673,7 @@ deauth-correlator --self-test
 deauth-correlator --list-parsers
 deauth-correlator camera {probe|snapshot|watch|help} [options]
 deauth-correlator update {check|install|endpoints} [options]
+deauth-correlator fetch {logs|probe|sources|fingerprint} [options]
 ```
 
 | Option | Default | Meaning |
@@ -764,7 +831,10 @@ deauth_correlator/
   plot.py       timeline.png                      onvif_min.py    dependency-free ONVIF
   evidence.py   the handover bundle               tapo.py         Tapo C100 profile
   selftest.py   fixtures and checks               recorder.py     motion events -> CSV
-  update.py     release check and staging       gui/
+  update.py     release check and staging     firewall/
+                                                  opnsense_api.py read-only log API
+                                                  fetch.py        window and provenance
+                                                gui/
                                                   app.py          the six-tab interface
                                                   liveview.py     the RTSP preview
 ```

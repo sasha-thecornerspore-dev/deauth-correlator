@@ -16,11 +16,13 @@ from .camera_files import CameraFilenameParser
 from .kismet import KismetParser
 from .nzyme import NzymeCsvParser
 from .opnsense import OpnsenseParser
+from .opnsense_api import OpnsenseApiParser
 from .pcap import PcapParser
 
 REGISTRY: list[Parser] = [
     PcapParser(),
     KismetParser(),
+    OpnsenseApiParser(),
     OpnsenseParser(),
     CameraCsvParser(),
     AirodumpCsvParser(),
@@ -32,7 +34,7 @@ BY_ID = {p.id: p for p in REGISTRY}
 
 #: Which parsers each CLI input flag is allowed to select.
 ROLE_PARSERS = {
-    "opnsense-log": ["opnsense"],
+    "opnsense-log": ["opnsense", "opnsense_api"],
     "wifi-capture": ["pcap80211", "kismet", "airodump_csv", "nzyme_csv"],
     "camera-events": ["camera_csv", "camera_clips"],
 }

@@ -114,7 +114,7 @@ python -m deauth_correlator --self-test
 
 It writes synthetic fixtures for every parser in the registry into a temporary directory,
 runs the entire pipeline over them twice, checks 146 assertions, and prints
-`SELF-TEST PASSED: all 195 checks passed.` The process exits 0 on success and 1 on
+`SELF-TEST PASSED: all 230 checks passed.` The process exits 0 on success and 1 on
 failure. Run it before you open a pull request and paste the final line into the
 description.
 
@@ -127,7 +127,7 @@ python -m deauth_correlator --self-test --self-test-dir ./fixtures
 `-q` suppresses the per-check `PASS` lines and prints only the section headers and the
 result. Failures are always printed, and are listed again at the end.
 
-The eleven sections, and what each one exists to catch:
+The twelve sections, and what each one exists to catch:
 
 | Section | Title | Catches |
 | --- | --- | --- |
@@ -142,6 +142,7 @@ The eleven sections, and what each one exists to catch:
 | 9 | Routine network traffic is not mistaken for evidence | the anti-fabrication regressions |
 | 10 | The read-only and chain-of-custody guarantees hold | the promises SAFETY.md makes: no proxy or redirect can receive the camera credential header, the recorder stops when told to, files are hashed before they are parsed, and a build with a dead GUI is detectable |
 | 11 | Updating and live view refuse what they should | the update host allow-list, archive members that would be written outside the extraction directory (including via a drive letter or a symbolic link), and credential redaction that hides both credentials without corrupting the message |
+| 12 | Reading logs off the firewall cannot write to it | the OPNsense log API's destructive actions are unreachable by construction; credentials cannot leave the configured host; the fetch window is derived from the camera events; and a fetched log yields exactly the events the same lines exported by hand would |
 
 A section that raises is recorded as one failed check and the remaining sections still
 run. That is deliberate: when something is broken you want the whole picture, not the
@@ -400,7 +401,7 @@ glossary, and no adjective where a number would do.
 
 Before opening a pull request:
 
-1. `python -m deauth_correlator --self-test` passes, all 195 checks (more, if you added
+1. `python -m deauth_correlator --self-test` passes, all 230 checks (more, if you added
    any). Paste the final line into the description.
 2. If you touched `stats.py`, `drops.py` or the de-duplication code, section 9 has a new
    check that fails without your change. Say in the description which check it is.

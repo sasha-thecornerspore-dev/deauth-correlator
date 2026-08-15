@@ -94,7 +94,7 @@ it usually means several camera rows are describing one vehicle.
   makes the permutation test's advantage larger, not smaller, so the calibration figures
   should be read as conservative — but they are not a substitute for a field trial.
 - **It tests the statistics, not the parsers.** Whether a log line is read correctly is
-  covered by `--self-test` (195 checks), not here.
+  covered by `--self-test` (230 checks), not here.
 - **It assumes the clocks are right.** Clock skew is a much larger practical risk than
   statistical error, and no amount of calibration addresses it. See the timezone and
   camera-clock sections of the README.

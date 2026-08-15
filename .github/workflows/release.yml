@@ -296,7 +296,7 @@ jobs:
           python -m deauth_correlator --self-test
           ```
 
-          The self-test runs 195 checks over synthetic evidence in every supported
+          The self-test runs 230 checks over synthetic evidence in every supported
           input format. Run it once on the machine that will do the analysis, and
           note the result: it is the simplest answer to a question about whether the
           software worked.

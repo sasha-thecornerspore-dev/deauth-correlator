@@ -92,7 +92,7 @@ def run_self_test(keep: str | None = None, verbose: bool = True) -> int:
         when something is broken you want the whole picture, not the first
         traceback.
         """
-        print(f"{'' if number == 1 else chr(10)}[{number}/11] {title}")
+        print(f"{'' if number == 1 else chr(10)}[{number}/12] {title}")
         try:
             body()
         except Exception as exc:
@@ -135,6 +135,8 @@ def run_self_test(keep: str | None = None, verbose: bool = True) -> int:
                 lambda: _test_guarantees(check, root / "guarantees"))
         section(11, "Updating and live view refuse what they should",
                 lambda: _test_update_and_liveview(check, root / "update"))
+        section(12, "Reading logs off the firewall cannot write to it",
+                lambda: _test_firewall(check, root / "firewall"))
 
     finally:
         if cleanup is not None:
@@ -1596,6 +1598,190 @@ def _test_update_and_liveview(check: Check, directory: Path) -> None:
     check.equal(_redact_credentials("No answer from 192.168.1.64:554."),
                 "No answer from 192.168.1.64:554.",
                 "a message carrying no URL is left exactly as written")
+
+def _test_firewall(check: Check, directory: Path) -> None:
+    """Reading logs off the firewall must never be able to write to it.
+
+    The OPNsense log API is one controller with four actions and one of them,
+    ``clear``, empties the log it is pointed at. For a tool whose whole purpose
+    is preserving evidence that is the single most dangerous call on the box, so
+    the checks below are not about whether the client happens to avoid it - they
+    assert that it cannot express it.
+
+    Nothing here touches a network. Every check is against the URL and argument
+    validation, or against a log file this test writes itself.
+    """
+    import json as _json
+    from .parsers import ParseContext, parse_path
+    from .timeutil import TimeContext
+    from datetime import datetime, timedelta, timezone as _tz
+
+    from .firewall import opnsense_api as fw
+    from .firewall import fetch as fwfetch
+
+    directory.mkdir(parents=True, exist_ok=True)
+    HOST, PORT = "fw.example.com", 443
+
+    # -- the destructive actions are unreachable ----------------------------
+    forbidden = [
+        (f"https://{HOST}/api/diagnostics/log/core/kea/clear",
+         "emptying the Kea log"),
+        (f"https://{HOST}/api/diagnostics/log/core/system/clear",
+         "emptying the system log"),
+        (f"https://{HOST}/api/core/system/reboot", "rebooting the firewall"),
+        (f"https://{HOST}/api/core/firmware/upgrade", "a firmware upgrade"),
+        (f"https://{HOST}/api/firewall/filter/addRule", "adding a firewall rule"),
+        (f"https://{HOST}/api/kea/service/restart", "restarting a service"),
+        (f"https://{HOST}/api/dhcpv4/leases/delLease", "deleting a DHCP lease"),
+        (f"https://{HOST}/api/diagnostics/log/core/../../core/system/reboot",
+         "a path that climbs out of the log API"),
+    ]
+    for url, why in forbidden:
+        try:
+            fw.check_url(url, HOST, PORT)
+            check.that(False, f"{why} is refused", f"{url} was accepted")
+        except fw.FirewallRefused:
+            check.that(True, f"{why} is refused")
+        except Exception as exc:                            # noqa: BLE001
+            check.that(False, f"{why} is refused",
+                       f"raised {exc.__class__.__name__}, not FirewallRefused")
+
+    # -- and the reads are allowed ------------------------------------------
+    for url, why in (
+            (f"https://{HOST}/api/diagnostics/log/core/kea", "reading the Kea log"),
+            (f"https://{HOST}/api/diagnostics/log/core/system",
+             "reading the system log"),
+            (f"https://{HOST}/api/core/system/status", "reading the firewall version")):
+        try:
+            fw.check_url(url, HOST, PORT)
+            check.that(True, f"{why} is allowed")
+        except fw.FirewallError as exc:
+            check.that(False, f"{why} is allowed", str(exc))
+
+    # -- credentials go to the firewall and nowhere else --------------------
+    for url, why in (
+            (f"http://{HOST}/api/diagnostics/log/core/kea",
+             "plain HTTP is refused, so the API secret cannot cross in clear"),
+            ("https://evil.example.com/api/diagnostics/log/core/kea",
+             "another host is refused"),
+            (f"https://{HOST}.evil.example.com/api/diagnostics/log/core/kea",
+             "a host that merely starts with the firewall's name is refused"),
+            (f"https://{HOST}@evil.example.com/api/diagnostics/log/core/kea",
+             "the firewall's name in the userinfo position is refused"),
+            (f"https://{HOST}:8443/api/diagnostics/log/core/kea",
+             "a port other than the configured one is refused"),
+            (f"https://{HOST}:notaport/api/diagnostics/log/core/kea",
+             "an unparseable port is refused as a FirewallError")):
+        try:
+            fw.check_url(url, HOST, PORT)
+            check.that(False, why, f"{url} was accepted")
+        except fw.FirewallError:
+            check.that(True, why)
+
+    # -- the module/scope components cannot smuggle in another endpoint -----
+    for bad in ("core/kea/clear", "../firmware", "kea;clear", "kea/../x", "a b"):
+        try:
+            fw._check_component(bad, "scope")
+            check.that(False, f"a log scope of {bad!r} is refused")
+        except fw.FirewallRefused:
+            check.that(True, f"a log scope of {bad!r} is refused")
+
+    # -- the window comes from the camera events ----------------------------
+    base = datetime(2026, 7, 14, 18, 0, tzinfo=_tz.utc)
+    since, until = fwfetch.window_from_events(
+        [base, base + timedelta(minutes=30), base + timedelta(hours=1)], 2.0)
+    check.equal((since, until), (base - timedelta(hours=2), base + timedelta(hours=3)),
+                "the fetch window is the camera events widened by the baseline margin")
+    for times, why in (([], "no camera events"),
+                       ([base, base + timedelta(days=90)], "a 90-day span")):
+        try:
+            fwfetch.window_from_events(times, 2.0)
+            check.that(False, f"{why} refuses rather than guessing a window")
+        except ValueError:
+            check.that(True, f"{why} refuses rather than guessing a window")
+
+    # -- an unverified connection is described as one -----------------------
+    insecure = fw.FirewallConfig(host=HOST, key="k", secret="s", verify=False)
+    check.that(insecure.tls_description().startswith("UNVERIFIED"),
+               "a connection with no certificate check is recorded as UNVERIFIED",
+               insecure.tls_description())
+    pinned = fw.FirewallConfig(host=HOST, key="k", secret="s",
+                               fingerprint="sha256:AB:CD")
+    check.that("pinned" in pinned.tls_description(),
+               "a pinned certificate is recorded as pinned")
+
+    # -- the API secret is never written to the case file -------------------
+    from .config import AppConfig
+    saved = AppConfig(firewall_host=HOST, firewall_key="THEKEY").save(
+        directory / "case.json")
+    written = saved.read_text(encoding="utf-8")
+    check.that("THEKEY" in written,
+               "the case file remembers the API key, which is not the secret half")
+    check.that("firewall_secret" not in written,
+               "the case file has no field for the API secret at all")
+
+    # -- a fetched log parses to the same events as the exported one --------
+    mac = "aa:bb:cc:dd:ee:ff"
+    messages = [
+        ("kea-dhcp4", f"DHCP4_LEASE_ALLOC [hwtype=1 {mac}], cid=[01:{mac}], "
+                      f"tid=0x1a2b3c: lease 192.168.1.50 has been allocated"),
+        ("kea-dhcp4", f"DHCP4_LEASE_RENEW [hwtype=1 {mac}], cid=[01:{mac}], "
+                      f"tid=0x1a2b3d: lease 192.168.1.50 has been renewed"),
+        ("hostapd", f"wlan0: STA {mac} IEEE 802.11: disassociated"),
+    ]
+    envelope = {
+        "deauth_correlator_fetch": 1,
+        "fetched_utc": base.isoformat(),
+        "tool": "self-test",
+        "firewall": {"host": HOST, "port": 443, "product": "OPNsense",
+                     "tls": "verified against the system certificate store"},
+        "request": {"endpoint": "/api/diagnostics/log/core/kea", "module": "core",
+                    "scope": "kea", "label": "Kea DHCP",
+                    "window_start_utc": base.isoformat(),
+                    "window_end_utc": (base + timedelta(hours=1)).isoformat()},
+        "row_count": len(messages), "complete": True, "note": "",
+        "rows": [{"timestamp": (base + timedelta(seconds=i * 30)).isoformat(),
+                  "severity": "Informational", "process_name": proc, "line": msg}
+                 for i, (proc, msg) in enumerate(messages)],
+    }
+    fetched = directory / "opnsense_core_kea_window.json"
+    fetched.write_text(_json.dumps(envelope, indent=1), encoding="utf-8")
+
+    exported = directory / "equivalent.log"
+    exported.write_text("\n".join(
+        f"{(base + timedelta(seconds=i * 30)).strftime('%b %e %H:%M:%S')} fw "
+        f"{proc}[100]: {msg}" for i, (proc, msg) in enumerate(messages)) + "\n",
+        encoding="utf-8")
+
+    time_ctx = TimeContext("UTC")
+    fetched_rows, fetched_parser = parse_path(
+        fetched, ParseContext(time=time_ctx), "opnsense-log", None)
+    exported_rows, exported_parser = parse_path(
+        exported, ParseContext(time=time_ctx, year_hint=2026), "opnsense-log", None)
+
+    check.equal(fetched_parser.id, "opnsense_api",
+                "a fetched log is detected as one, not as a plain log file")
+    check.equal(exported_parser.id, "opnsense",
+                "an exported log is still detected as a plain log file")
+    shape = lambda rows: [(r["kind"], r.get("subtype"), r.get("client_mac"))
+                          for r in rows]
+    check.at_least(len(fetched_rows), 3,
+                   "every event in the fetched log is recovered")
+    check.equal(shape(fetched_rows), shape(exported_rows),
+                "a log fetched from the firewall yields exactly the events the "
+                "same lines exported by hand would")
+
+    # -- provenance that weakens the evidence is surfaced -------------------
+    envelope["firewall"]["tls"] = "UNVERIFIED - the certificate was not checked"
+    envelope["complete"] = False
+    risky = directory / "unverified.json"
+    risky.write_text(_json.dumps(envelope), encoding="utf-8")
+    ctx = ParseContext(time=time_ctx)
+    parse_path(risky, ctx, "opnsense-log", None)
+    check.that(any("certificate was not checked" in w for w in ctx.warnings),
+               "an analysis over an unverified fetch says so in its warnings")
+    check.that(any("page limit" in w for w in ctx.warnings),
+               "an analysis over a truncated fetch says the start is incomplete")
 
 def _write_nzyme(path: Path, attack_times, rng) -> None:
     with open(path, "w", encoding="utf-8", newline="") as fh:
