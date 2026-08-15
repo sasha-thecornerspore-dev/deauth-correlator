@@ -1593,14 +1593,41 @@ def _test_update_and_liveview(check: Check, directory: Path) -> None:
                            asset_name="deauth-correlator-99.0.0-windows-x86_64.zip",
                            asset_url="https://github.com/x/y/releases/download/a/b.zip",
                            asset_size=1234, published_utc="2099-01-01T00:00:00Z")
+    # Everything past the check is stubbed, for two reasons. The obvious one is
+    # that the self-test must not reach the network. The other is that the
+    # command behaves differently depending on where it is run from - a pip
+    # install returns early with the pip upgrade line, a standalone build goes
+    # on to download - and an earlier version of this check only stubbed
+    # check_for_update. It passed from a source tree, where the early return
+    # hides everything after it, and failed on the frozen build in CI, which
+    # took the other branch and tried to fetch a release that does not exist.
+    # Stubbing the whole path drives the same lines in both.
+    staged = updater.StagedUpdate(
+        version="99.0.0", previous_version=__version__,
+        install_root=directory / "install", container=directory / "container",
+        tree=directory / "container" / "new",
+        previous=directory / "container" / "previous")
     real_check = updater.check_for_update
+    real_download = updater.download_and_verify
+    real_stage = updater.stage_update
     calls: list = []
 
     def _fake_check(*args, **kwargs):
         calls.append((args, kwargs))
         return fake
 
+    def _fake_download(release, destination, **kwargs):
+        target = Path(destination) / (release.asset_name or "archive.zip")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"not a real archive")
+        return target
+
+    def _fake_stage(release, archive, root, **kwargs):
+        return staged
+
     updater.check_for_update = _fake_check
+    updater.download_and_verify = _fake_download
+    updater.stage_update = _fake_stage
     try:
         for action, why in (
                 (["check"], "'update check' runs to completion when one exists"),
@@ -1620,6 +1647,8 @@ def _test_update_and_liveview(check: Check, directory: Path) -> None:
                            f"{exc.__class__.__name__}: {exc}")
     finally:
         updater.check_for_update = real_check
+        updater.download_and_verify = real_download
+        updater.stage_update = real_stage
 
     check.that(len(calls) >= 2,
                "the invented release really was consulted, so the branch was taken",
