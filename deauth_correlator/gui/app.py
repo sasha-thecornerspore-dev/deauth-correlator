@@ -1071,7 +1071,7 @@ class App(ttk.Frame):
             try:
                 from .. import update as updater
                 place = updater.installation()
-                if not place.is_standalone():
+                if not place.is_standalone:
                     self._post("update_staged_text",
                                "This is not a standalone build. Update it with:\n    "
                                + updater.pip_upgrade_command())

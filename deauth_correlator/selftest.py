@@ -1357,6 +1357,7 @@ def _test_update_and_liveview(check: Check, directory: Path) -> None:
     """
     import zipfile
 
+    from . import cli as cli_module
     from . import update as updater
 
     directory.mkdir(parents=True, exist_ok=True)
@@ -1572,6 +1573,97 @@ def _test_update_and_liveview(check: Check, directory: Path) -> None:
         name in updater.check_for_update.__code__.co_names
         for name in ("stage_update", "download_and_verify", "complete_update")),
         "checking for an update cannot install one")
+
+
+    # -- the install path must actually be executed, not just imported ------
+    # Two bugs shipped here in a row, both of the same shape: code on the
+    # "an update exists" branch that only runs when a newer release really is
+    # published, so nothing before this exercised it. 1.1.0 called the progress
+    # callback with one argument where it takes two; 1.1.1 called
+    # `place.is_standalone()` where that is a property, so it tried to call a
+    # bool. Both are trivial. Both made `update install` fail outright, and
+    # neither was reachable from any offline check.
+    #
+    # So the fix is not another assertion about the code - it is to run the
+    # command, with a release invented here so the branch is taken.
+    import argparse as _argparse
+
+    fake = updater.Release(version="99.0.0", tag="v99.0.0",
+                           notes="invented by the self-test",
+                           asset_name="deauth-correlator-99.0.0-windows-x86_64.zip",
+                           asset_url="https://github.com/x/y/releases/download/a/b.zip",
+                           asset_size=1234, published_utc="2099-01-01T00:00:00Z")
+    real_check = updater.check_for_update
+    calls: list = []
+
+    def _fake_check(*args, **kwargs):
+        calls.append((args, kwargs))
+        return fake
+
+    updater.check_for_update = _fake_check
+    try:
+        for action, why in (
+                (["check"], "'update check' runs to completion when one exists"),
+                (["install", "--yes"],
+                 "'update install' runs to completion when one exists")):
+            import contextlib
+            import io
+            noise = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(noise):
+                    code = cli_module._update_command(action)
+                check.that(code == 0, why, f"exited {code}")
+            except SystemExit as exc:
+                check.that(exc.code in (0, None), why, f"exited {exc.code}")
+            except Exception as exc:                        # noqa: BLE001
+                check.that(False, why,
+                           f"{exc.__class__.__name__}: {exc}")
+    finally:
+        updater.check_for_update = real_check
+
+    check.that(len(calls) >= 2,
+               "the invented release really was consulted, so the branch was taken",
+               f"check_for_update was called {len(calls)} time(s)")
+
+    # A property called as a method raises only when that line runs, which for
+    # this module means only when an update exists. Catch the whole class at
+    # once rather than one instance at a time.
+    import io as _io
+    import tokenize as _tokenize
+
+    properties = {name for name, value
+                  in vars(updater.Installation).items()
+                  if isinstance(value, property)}
+    properties |= {name for name, value in vars(updater.Release).items()
+                   if isinstance(value, property)}
+
+    def _code_only(text: str) -> str:
+        """The source with comments and string literals removed.
+
+        Without this the scan trips over prose - this very check describes the
+        bug it looks for, and would report itself.
+        """
+        kept = []
+        try:
+            for token in _tokenize.generate_tokens(_io.StringIO(text).readline):
+                if token.type in (_tokenize.COMMENT, _tokenize.STRING):
+                    continue
+                kept.append(token.string)
+        except (_tokenize.TokenError, IndentationError, SyntaxError):
+            return text
+        return "".join(kept)
+
+    offenders = []
+    for source_file in sorted(Path(cli_module.__file__).parent.rglob("*.py")):
+        if "__pycache__" in str(source_file):
+            continue
+        body = _code_only(source_file.read_text(encoding="utf-8", errors="replace"))
+        for name in properties:
+            if f".{name}()" in body:
+                offenders.append(f"{source_file.name} calls .{name}() on a property")
+    check.that(not offenders,
+               "no property of Installation or Release is called as a method",
+               "; ".join(offenders))
 
     # -- credentials never reach the screen ---------------------------------
     try:

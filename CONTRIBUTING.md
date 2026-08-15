@@ -114,7 +114,7 @@ python -m deauth_correlator --self-test
 
 It writes synthetic fixtures for every parser in the registry into a temporary directory,
 runs the entire pipeline over them twice, checks 146 assertions, and prints
-`SELF-TEST PASSED: all 230 checks passed.` The process exits 0 on success and 1 on
+`SELF-TEST PASSED: all 234 checks passed.` The process exits 0 on success and 1 on
 failure. Run it before you open a pull request and paste the final line into the
 description.
 
@@ -401,7 +401,7 @@ glossary, and no adjective where a number would do.
 
 Before opening a pull request:
 
-1. `python -m deauth_correlator --self-test` passes, all 230 checks (more, if you added
+1. `python -m deauth_correlator --self-test` passes, all 234 checks (more, if you added
    any). Paste the final line into the description.
 2. If you touched `stats.py`, `drops.py` or the de-duplication code, section 9 has a new
    check that fails without your change. Say in the description which check it is.

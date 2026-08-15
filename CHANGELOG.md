@@ -7,6 +7,42 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Because
 output of this tool is used as evidence, any change to how a verdict is reached will be
 listed explicitly, with the direction of its effect stated.
 
+## [1.2.1] - 2026-08-15
+
+A fix for `update install`, which was broken in 1.1.0, 1.1.1 and 1.2.0. It works now,
+and there is finally a check that would have caught it.
+
+### Fixed
+
+- **`deauth-correlator update install` failed with `TypeError: 'bool' object is not
+  callable`**, in both the command line and the graphical interface. `is_standalone` is
+  a property on the installation record, and both callers wrote
+  `place.is_standalone()` — which calls the boolean the property returns.
+
+  Nothing could be damaged by it. The line runs before anything is downloaded, so the
+  command aborted having changed nothing at all.
+
+- **The reason this is the second one.** 1.1.0 called the progress callback with the
+  wrong number of arguments; 1.1.1 called a property as a method. Both are one-line
+  mistakes on the same branch — the code that only runs when a newer release genuinely
+  exists — and neither could be reached by any check that did not have a newer release
+  to find. Fixing the second one the same way as the first would have left the third to
+  be found by whoever tried to update next.
+
+  So `--self-test` now **runs the command**. It invents a release, hands it to
+  `check_for_update`, and drives `update check` and `update install` to completion,
+  requiring both to exit cleanly. Re-introducing either bug fails the suite. A second
+  check scans the package for any property of `Installation` or `Release` called as a
+  method, with comments and string literals stripped so it does not trip over prose
+  describing the bug.
+
+  `--self-test` now runs 234 checks, or 227 without the optional dependencies.
+
+**If you are on 1.1.0, 1.1.1 or 1.2.0, update by hand** — download the archive from the
+releases page. Those versions cannot install this one, because installing is what was
+broken. From 1.2.1 onwards `update install` has been run end to end against a real
+published release.
+
 ## [1.2.0] - 2026-08-15
 
 You should not have to go and find the logs. Attach the camera events, press one button,
@@ -108,7 +144,14 @@ A fix for 1.1.0, released the same day. `update install` did not work at all.
 
 **If you are on 1.1.0, update by hand** — download the archive from the releases page as
 you did before. 1.1.0 cannot install 1.1.1 for you, because installing is the part that
-is broken. From 1.1.1 onwards `update install` works.
+is broken.
+
+> **Correction, added in 1.2.1.** This entry originally ended "From 1.1.1 onwards
+> `update install` works." That was wrong. 1.1.1 fixed the progress callback but still
+> called a property as a method a few lines further on, so `update install` remained
+> broken in 1.1.1 and in 1.2.0. It is fixed in
+> [1.2.1](#121---2026-08-15), which also adds the check that runs the command rather
+> than reasoning about it.
 
 ## [1.1.0] - 2026-08-14
 

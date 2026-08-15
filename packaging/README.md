@@ -207,7 +207,7 @@ because they are also how you check an application someone hands you.
 
 ```bash
 ./deauth-correlator --version         # deauth-correlator <version>
-./deauth-correlator --self-test       # SELF-TEST PASSED: all 230 checks passed.
+./deauth-correlator --self-test       # SELF-TEST PASSED: all 234 checks passed.
 ./deauth-correlator --check-runtime   # every bundled subsystem must load
 ./deauth-correlator --list-parsers
 ```

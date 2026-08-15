@@ -473,7 +473,7 @@ def _update_command(argv: list[str]) -> int:
         print("Install it with:  deauth-correlator update install")
         return 0
 
-    if not place.is_standalone():
+    if not place.is_standalone:
         print()
         print("This is not a standalone build, so the update is not applied here.")
         print(f"Run:  {updater.pip_upgrade_command()}")

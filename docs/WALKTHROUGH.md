@@ -85,14 +85,14 @@ clip files — and runs the entire pipeline over it twice. The run ends like thi
 
 ```
 ============================================================
-SELF-TEST PASSED: all 230 checks passed.
+SELF-TEST PASSED: all 234 checks passed.
 ```
 
 It exits 0 when everything passes and 1 when anything fails, so it can go in a script.
-A base install without the optional extras reports 223 instead, skipping the camera
+A base install without the optional extras reports 227 instead, skipping the camera
 checks, which need `requests`. Both are passes.
 
-The 230 checks are grouped into twelve sections, and it is worth knowing what each one is
+The 234 checks are grouped into twelve sections, and it is worth knowing what each one is
 defending:
 
 | Section | What it proves |
@@ -140,7 +140,7 @@ deauth-correlator <version> - self-test
 
 Fixtures: /home/you/fixtures
 ...
-SELF-TEST PASSED: all 230 checks passed.
+SELF-TEST PASSED: all 234 checks passed.
 Fixtures kept in /home/you/fixtures
 ```
 
