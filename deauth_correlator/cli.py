@@ -492,13 +492,32 @@ def _update_command(argv: list[str]) -> int:
             print("Nothing was changed.")
             return 0
 
+    def reporter(label: str, unit: str):
+        """A ProgressFn that prints at most twice a second, and once at the end.
+
+        verify_tree calls back once per file, so an unthrottled printer would
+        bury the result under a thousand lines.
+        """
+        import time as _time
+        last = [0.0]
+
+        def report(done: int, total: int) -> None:
+            now = _time.monotonic()
+            if not (total and done >= total) and now - last[0] < 0.5:
+                return
+            last[0] = now
+            print(f"  {label} {updater.format_progress(done, total, unit)}")
+
+        return report
+
     try:
         with tempfile.TemporaryDirectory(prefix="deauth-correlator-update-") as tmp:
             archive = updater.download_and_verify(
-                release, Path(tmp), progress=lambda m: print(f"  {m}"),
+                release, Path(tmp), progress=reporter("downloading", "bytes"),
                 timeout=args.timeout)
-            staged = updater.stage_update(release, archive, place.root,
-                                          progress=lambda m: print(f"  {m}"))
+            staged = updater.stage_update(
+                release, archive, place.root,
+                progress=reporter("verifying", "files"))
     except updater.UpdateError as exc:
         print(f"\nUpdate aborted, nothing was changed: {exc}", file=sys.stderr)
         return 1

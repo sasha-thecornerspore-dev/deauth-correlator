@@ -15,6 +15,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 import traceback
 import webbrowser
@@ -852,14 +853,31 @@ class App(ttk.Frame):
                                "This is not a standalone build. Update it with:\n    "
                                + updater.pip_upgrade_command())
                     return
+                def reporter(label: str, unit: str):
+                    # progress is called with (done, total), and verify_tree
+                    # calls it once per file - throttle, or the queue fills
+                    # with a line per file in the build.
+                    last = [0.0]
+
+                    def report(done: int, total: int) -> None:
+                        now = time.monotonic()
+                        if not (total and done >= total) and now - last[0] < 0.2:
+                            return
+                        last[0] = now
+                        self._post("update_progress",
+                                   f"{label} "
+                                   f"{updater.format_progress(done, total, unit)}")
+
+                    return report
+
                 with tempfile.TemporaryDirectory(
                         prefix="deauth-correlator-update-") as tmp:
                     archive = updater.download_and_verify(
                         release, Path(tmp),
-                        progress=lambda m: self._post("update_progress", m))
+                        progress=reporter("Downloading", "bytes"))
                     staged = updater.stage_update(
                         release, archive, place.root,
-                        progress=lambda m: self._post("update_progress", m))
+                        progress=reporter("Verifying", "files"))
                 self._post("update_staged_text",
                            updater.completion_instructions(staged))
             except Exception as exc:

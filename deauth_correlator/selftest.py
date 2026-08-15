@@ -1535,6 +1535,36 @@ def _test_update_and_liveview(check: Check, directory: Path) -> None:
                  "deauth-correlator/deauth-correlator"],
                 "a legitimate tarball extracts with every file where it belongs")
 
+    # -- the progress callback contract ------------------------------------
+    # This is two numbers, not a message string, and getting it wrong is
+    # invisible until a download is actually running: every caller here passed
+    # a one-argument lambda once, and `update install` died with a TypeError
+    # partway through fetching the archive. Assert the shape offline.
+    check.equal(updater.format_progress(0, 0), "0 B",
+                "progress with nothing done and no total reads sensibly")
+    check.equal(updater.format_progress(512, 1024), "512 B of 1.0 KiB (50%)",
+                "a byte count renders as a size")
+    check.equal(updater.format_progress(38, 112, "files"),
+                "38 of 112 files (33%)", "a file count renders as a count")
+    check.equal(updater.format_progress(7, 0, "files"), "7 files",
+                "an unknown total is left out rather than shown as zero")
+
+    seen: list = []
+    verified = directory / "progress-tree"
+    (verified / "sub").mkdir(parents=True, exist_ok=True)
+    (verified / "one.txt").write_text("a\n", encoding="utf-8")
+    (verified / "sub" / "two.txt").write_text("b\n", encoding="utf-8")
+    from .hashing import sha256_file
+    lines = [f"{sha256_file(p)}  {p.relative_to(verified).as_posix()}"
+             for p in sorted(verified.rglob("*")) if p.is_file()]
+    (verified / "CONTENTS.sha256").write_text("\n".join(lines) + "\n",
+                                              encoding="utf-8")
+    updater.verify_tree(verified, progress=lambda done, total: seen.append((done, total)))
+    check.that(bool(seen) and all(isinstance(d, int) and isinstance(t, int)
+                                  for d, t in seen),
+               "verify_tree calls progress with two integers, as documented",
+               f"got {seen[:3]}")
+
     # -- an update is never installed as a side effect of checking ----------
     check.that(not any(
         name in updater.check_for_update.__code__.co_names

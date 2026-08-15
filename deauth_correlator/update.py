@@ -179,11 +179,31 @@ MAX_EXTRACTED_BYTES = 4096 * 1024 * 1024
 ProgressFn = Callable[[int, int], None]
 """Called as ``progress(done, total)``. ``total`` is 0 when it is not known.
 
+Two arguments, both numbers - not a message string. :func:`format_progress`
+turns a pair into a line to show, so that a caller does not have to decide how
+to word it and every caller words it the same way.
+
 The unit is bytes during a download and files during a verification pass; each
 function that takes one says which. Exceptions raised by the callback are not
 swallowed, so a caller that aborts by raising gets a clean abort - partial
 files are removed by the ``finally`` blocks that own them.
 """
+
+
+def format_progress(done: int, total: int, unit: str = "bytes") -> str:
+    """One readable line for a :data:`ProgressFn` callback.
+
+    ``unit`` is ``"bytes"`` during a download and the name of the thing being
+    counted otherwise, so a verification pass reads "38 of 112 files (33%)".
+    """
+    if total > 0:
+        percent = done * 100 // total
+        if unit == "bytes":
+            return f"{_human(done)} of {_human(total)} ({percent}%)"
+        # The unit belongs on the total only - "38 files of 112 files" reads
+        # like two different quantities.
+        return f"{done:,} of {total:,} {unit} ({percent}%)"
+    return _human(done) if unit == "bytes" else f"{done:,} {unit}"
 
 
 # --------------------------------------------------------------------------

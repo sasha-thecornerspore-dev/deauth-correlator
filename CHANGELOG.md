@@ -7,6 +7,35 @@ project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Because
 output of this tool is used as evidence, any change to how a verdict is reached will be
 listed explicitly, with the direction of its effect stated.
 
+## [1.1.1] - 2026-08-14
+
+A fix for 1.1.0, released the same day. `update install` did not work at all.
+
+### Fixed
+
+- **`deauth-correlator update install` failed partway through the download** with
+  `TypeError: <lambda>() takes 1 positional argument but 2 were given`, in both the
+  command line and the graphical interface. The progress callback is documented and
+  implemented as `progress(done, total)` — two numbers — and both callers passed a
+  one-argument function expecting a message string. Nothing was ever installed or
+  damaged: the failure happens while the archive is being fetched, before anything is
+  unpacked or replaced, and the partial download is removed by the `finally` block that
+  owns it. But the feature could not be used.
+
+  This was invisible to every check that existed. The download is the only caller of that
+  callback with a real total, and it only runs against a live release, so the first thing
+  to exercise it was an end-to-end run against the published 1.1.0.
+
+  `format_progress(done, total, unit)` now renders the line, so callers no longer decide
+  the wording, and five self-test checks cover the contract offline — including one that
+  calls `verify_tree` with a strict two-argument callback and asserts it is invoked with
+  two integers. `--self-test` now runs 195 checks, or 188 without the optional
+  dependencies.
+
+**If you are on 1.1.0, update by hand** — download the archive from the releases page as
+you did before. 1.1.0 cannot install 1.1.1 for you, because installing is the part that
+is broken. From 1.1.1 onwards `update install` works.
+
 ## [1.1.0] - 2026-08-14
 
 Two features that were asked for directly: the program can tell you when a newer release
