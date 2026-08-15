@@ -102,6 +102,19 @@ jobs:
         run: |
           python packaging/build.py
 
+      - name: Licence gate
+        # Deliberately between the build and the archive: the artefact exists,
+        # nothing has been published yet, and this is the only point where a
+        # check can see what PyInstaller actually collected.
+        #
+        # v1.0.0 through v1.0.3 each shipped a 30 MB LGPL FFmpeg binary with no
+        # notice and no licence text. It arrived inside opencv-python, which is
+        # Apache-2.0, so every manifest in the repo was clean and truthful and
+        # no manifest-reading tool would have flagged it. Only the built tree
+        # knows.
+        run: |
+          python tools/license_gate.py --artifact dist
+
       - name: Collect the build output into one archive
         shell: bash
         env:

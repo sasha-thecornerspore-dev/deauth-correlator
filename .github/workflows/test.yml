@@ -65,6 +65,38 @@ jobs:
         run: |
           python -m deauth_correlator --self-test
 
+  licence-gate:
+    # Manifest layers only. No artefact exists on a test run, so the layer that
+    # actually catches redistributed copyleft binaries -- walking the built tree
+    # -- cannot run here; it lives in release.yml, immediately after the build
+    # step and before anything is archived. What this job catches is a dependency
+    # arriving with a licence the project cannot ship, before it reaches a tag.
+    name: ubuntu-latest / Python 3.12 / licence gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install with every optional extra
+        # The extras are what pull in OpenCV, and OpenCV is what carries FFmpeg.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[all]"
+
+      - name: Licence gate
+        run: |
+          python tools/license_gate.py
+
   self-test-without-scipy:
     # scipy is an optional dependency, and without it the significance tests fall
     # back to exact pure-Python implementations. The self-test compares the two
