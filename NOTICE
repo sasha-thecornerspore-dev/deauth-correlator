@@ -13,3 +13,99 @@ distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
 WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 License for the specific language governing permissions and limitations
 under the License.
+
+
+================================================================================
+THIRD-PARTY COMPONENTS IN THE STANDALONE BUILDS
+================================================================================
+
+The published standalone binaries (the archives attached to each GitHub
+release) are frozen with PyInstaller and therefore redistribute the Python
+interpreter and the libraries below. Installing from source with `pip` does
+not redistribute anything -- pip fetches these from PyPI under their own
+licenses -- so this section describes the release archives specifically.
+
+To re-derive this list, inspect a built tree rather than the manifests:
+`dist/deauth-correlator/_internal/`.
+
+--------------------------------------------------------------------------------
+FFmpeg -- LGPL-2.1-or-later  ** SEE THE LGPL NOTICE BELOW **
+--------------------------------------------------------------------------------
+Redistributed inside the opencv-python wheel, not depended on directly. It
+arrives as a separate dynamically-loaded shared library:
+
+    _internal/cv2/opencv_videoio_ffmpeg500_64.dll   (Windows, 30,876,160 bytes)
+
+The equivalent shared library is present in the macOS and Linux archives. The
+opencv-python wheel ships its own upstream notice at
+`_internal/cv2/LICENSE-3RD-PARTY.txt`, which states verbatim that "FFmpeg is
+redistributed within all opencv-python packages" and carries the full LGPL
+text.
+
+--------------------------------------------------------------------------------
+Apache License 2.0
+--------------------------------------------------------------------------------
+OpenCV (opencv-python)          https://github.com/opencv/opencv
+python-dateutil (dual Apache-2.0 / BSD-3-Clause)
+tzdata (packaging; the underlying IANA time zone database is public domain)
+
+--------------------------------------------------------------------------------
+BSD 3-Clause
+--------------------------------------------------------------------------------
+NumPy 2.5.1                     https://numpy.org
+pandas                          https://pandas.pydata.org
+SciPy                           https://scipy.org
+contourpy, kiwisolver           (matplotlib dependencies)
+libvpx                          redistributed inside the opencv-python wheel
+                                (present in the Linux archives)
+
+--------------------------------------------------------------------------------
+MIT / MIT-CMU
+--------------------------------------------------------------------------------
+Pillow (MIT-CMU)                https://python-pillow.org
+charset-normalizer              https://github.com/jawah/charset_normalizer
+setuptools                      https://github.com/pypa/setuptools
+
+--------------------------------------------------------------------------------
+Mozilla Public License 2.0
+--------------------------------------------------------------------------------
+certifi                         https://github.com/certifi/python-certifi
+The MPL requires that the source of this component remain available; it is
+unmodified and obtainable from the URL above.
+
+--------------------------------------------------------------------------------
+Other
+--------------------------------------------------------------------------------
+Matplotlib          Matplotlib License (BSD-compatible, PSF-derived)
+Python              Python Software Foundation License -- the interpreter is
+                    embedded in the frozen build
+Tcl/Tk              Tcl/Tk License (BSD-style) -- embedded for the tkinter GUI
+PyInstaller         bootloader only: GPL-2.0-or-later WITH the bootloader
+                    exception, which expressly permits distributing proprietary
+                    or differently-licensed frozen applications
+
+================================================================================
+LGPL NOTICE (FFmpeg)
+================================================================================
+
+The standalone builds redistribute FFmpeg under the GNU Lesser General Public
+License, version 2.1 or later.
+
+FFmpeg is included as a SEPARATE, DYNAMICALLY-LOADED shared library. It is
+neither statically linked into deauth-correlator nor modified by it. A
+recipient may replace it with their own build of the corresponding FFmpeg
+version by substituting that file in the `_internal/cv2/` directory; nothing
+in this application prevents, detects, or disables that substitution.
+
+The full text of the LGPL is distributed with the standalone builds in
+`_internal/cv2/LICENSE-3RD-PARTY.txt`, and is also available at:
+
+    https://www.gnu.org/licenses/lgpl-2.1.html
+
+FFmpeg source corresponding to the redistributed binary is available from the
+opencv-python project, which builds it:
+
+    https://github.com/opencv/opencv-python
+
+deauth-correlator itself remains under the Apache License 2.0. The LGPL
+applies to FFmpeg only.

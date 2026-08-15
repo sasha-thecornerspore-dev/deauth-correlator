@@ -193,6 +193,26 @@ for optional in ("requests", "cv2"):
     if _installed(optional):
         hiddenimports.append(optional)
 
+# LGPL compliance, and it has to happen here rather than in a document.
+#
+# The opencv-python wheel redistributes FFmpeg as a separate shared library
+# (opencv_videoio_ffmpeg*.dll, ~30 MB). PyInstaller's cv2 hook pulls that binary
+# into the build but leaves its licence text behind, so every standalone archive
+# published so far has shipped an LGPL-2.1 library with no accompanying licence
+# - which the LGPL does not permit. NOTICE points recipients at this exact path,
+# so the files have to be there.
+#
+# find_spec rather than `import cv2`: this runs at build time and there is no
+# reason to load OpenCV to learn where it lives.
+if _installed("cv2"):
+    _cv2_spec = importlib.util.find_spec("cv2")
+    if _cv2_spec and _cv2_spec.origin:
+        _cv2_dir = Path(_cv2_spec.origin).resolve().parent
+        for _license_name in ("LICENSE.txt", "LICENSE-3RD-PARTY.txt"):
+            _license_file = _cv2_dir / _license_name
+            if _license_file.is_file():
+                datas.append((str(_license_file), "cv2"))
+
 
 # --------------------------------------------------------------------------
 # What to keep out
